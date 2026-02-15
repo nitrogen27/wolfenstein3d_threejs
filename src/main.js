@@ -17,6 +17,8 @@ const CLIP_AMMO = 4; // Original Wolf3D: ammo clip gives 4 bullets
 const PICKUP_RADIUS = 1.6;
 const DOOR_TRAVEL = CELL - 0.02;
 const DOOR_PASSABLE_OPEN = 0.8;
+const JUMP_VELOCITY = 4.6;
+const PLAYER_GRAVITY = 15.0;
 
 // ─── Game State ─────────────────────────────────
 const state = {
@@ -164,6 +166,11 @@ guardAtlas.magFilter = THREE.NearestFilter;
 guardAtlas.minFilter = THREE.NearestFilter;
 guardAtlas.colorSpace = THREE.SRGBColorSpace;
 
+const dogAtlas = loader.load('/textures/dog.png');
+dogAtlas.magFilter = THREE.NearestFilter;
+dogAtlas.minFilter = THREE.NearestFilter;
+dogAtlas.colorSpace = THREE.SRGBColorSpace;
+
 function wallTile(col, row) {
     const tex = wallsAtlas.clone();
     tex.needsUpdate = true;
@@ -200,6 +207,20 @@ function guardTile(col, row) {
     tex.needsUpdate = true;
     tex.repeat.set(1 / GUARD_SIZE, 1 / GUARD_SIZE);
     tex.offset.set(col / GUARD_SIZE, 1 - (row + 1) / GUARD_SIZE);
+    tex.magFilter = THREE.NearestFilter;
+    tex.minFilter = THREE.NearestFilter;
+    tex.wrapS = THREE.ClampToEdgeWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+    return tex;
+}
+
+function dogTile(frameIdx) {
+    const DOG_FRAMES = 39; // 103..141 from original Wolf3D sprites
+    const idx = Math.max(0, Math.min(frameIdx, DOG_FRAMES - 1));
+    const tex = dogAtlas.clone();
+    tex.needsUpdate = true;
+    tex.repeat.set(1 / DOG_FRAMES, 1);
+    tex.offset.set(idx / DOG_FRAMES, 0);
     tex.magFilter = THREE.NearestFilter;
     tex.minFilter = THREE.NearestFilter;
     tex.wrapS = THREE.ClampToEdgeWrapping;
@@ -325,7 +346,7 @@ const ENEMY_TYPES = {
     guard:   { name:'Guard',   hp:25,  speed:2.2, dmg:[5,10],  score:100,  alertDist:13, shootDist:12, cooldown:[0.9,1.5], acc:0.6,  alertSfx:SFX.guardAlert,   deathSfx:SFX.guardDeath,   atkSfx:SFX.guardAttack,   tint:null, scale:[1.55,2.08], melee:false, silent:false, noPain:false, dodges:false, rushes:false, canOpenDoors:true },
     officer: { name:'Officer', hp:50,  speed:3.4, dmg:[8,15],  score:400,  alertDist:18, shootDist:14, cooldown:[0.6,1.1], acc:0.75, alertSfx:SFX.officerAlert, deathSfx:SFX.officerDeath, atkSfx:SFX.guardAttack,   tint:new THREE.Color(0.9,0.9,1.2), scale:[1.55,2.08], melee:false, silent:false, noPain:false, dodges:true, rushes:false, canOpenDoors:true },
     ss:      { name:'SS',      hp:100, speed:2.9, dmg:[10,20], score:500,  alertDist:20, shootDist:16, cooldown:[0.45,0.85], acc:0.8,  alertSfx:SFX.ssAlert,      deathSfx:SFX.ssDeath,      atkSfx:SFX.ssAttack,      tint:new THREE.Color(0.5,0.5,0.5), scale:[1.68,2.24], melee:false, silent:false, noPain:false, dodges:true, rushes:false, canOpenDoors:true },
-    dog:     { name:'Dog',     hp:1,   speed:5.2, dmg:[5,12],  score:200,  alertDist:15, shootDist:2.4,cooldown:[0.45,0.8], acc:0.9,  alertSfx:SFX.dogAlert,     deathSfx:SFX.dogDeath,     atkSfx:SFX.knife,         tint:new THREE.Color(0.8,0.6,0.3), scale:[1.30,1.05], melee:true, silent:false, noPain:false, dodges:false, rushes:true, canOpenDoors:false },
+    dog:     { name:'Dog',     hp:1,   speed:5.2, dmg:[5,12],  score:200,  alertDist:15, shootDist:2.4,cooldown:[0.45,0.8], acc:0.9,  alertSfx:SFX.dogAlert,     deathSfx:SFX.dogDeath,     atkSfx:SFX.knife,         tint:null, scale:[1.30,1.05], melee:true, silent:false, noPain:false, dodges:false, rushes:true, canOpenDoors:false },
     mutant:  { name:'Mutant',  hp:55,  speed:2.8, dmg:[8,18],  score:700,  alertDist:16, shootDist:12, cooldown:[0.2,0.4], acc:0.7,  alertSfx:SFX.guardAlert,   deathSfx:SFX.mutantDeath,  atkSfx:SFX.guardAttack,   tint:new THREE.Color(0.4,0.8,0.3), scale:[1.68,2.24], melee:false, silent:true, noPain:false, dodges:false, rushes:false, canOpenDoors:true },
     boss:    { name:'Boss',    hp:850, speed:1.7, dmg:[15,30], score:5000, alertDist:24, shootDist:19, cooldown:[0.3,0.6], acc:0.85, alertSfx:SFX.bossAlert,    deathSfx:SFX.bossDeath,    atkSfx:SFX.bossAttack,    tint:new THREE.Color(1.2,0.8,0.8), scale:[2.30,2.78], melee:false, silent:false, noPain:true, dodges:false, rushes:false, canOpenDoors:true },
 };
@@ -351,6 +372,12 @@ const guardDeathFrames = [
     guardTile(3, 5),  // frame 3: down (front)
     guardTile(4, 5),  // frame 4: flat dead
 ];
+const dogWalkFrames = [];
+for (let step = 0; step < 4; step++) {
+    for (let dir = 0; dir < 8; dir++) dogWalkFrames.push(dogTile(step * 8 + dir));
+}
+const dogDeathFrames = [dogTile(32), dogTile(33), dogTile(34), dogTile(35)];
+const dogJumpFrames = [dogTile(36), dogTile(37), dogTile(38)];
 // Muzzle flash pool for enemy shooting visual feedback
 const MUZZLE_FLASH_POOL = [];
 const MUZZLE_FLASH_COUNT = 8;
@@ -412,6 +439,12 @@ const guardDeathPose = [
     { sx: 1.12, sy: 0.66, y: 0.34 },
     { sx: 1.18, sy: 0.56, y: 0.28 },
     { sx: 1.24, sy: 0.48, y: 0.24 },
+];
+const dogDeathPose = [
+    { sx: 1.0, sy: 0.86, y: 0.36 },
+    { sx: 1.06, sy: 0.72, y: 0.30 },
+    { sx: 1.14, sy: 0.58, y: 0.24 },
+    { sx: 1.22, sy: 0.44, y: 0.18 },
 ];
 
 // ─── Scene Setup ────────────────────────────────
@@ -642,7 +675,8 @@ function loadLevel(levelIdx) {
         const wx = e.x * CELL + CELL / 2;
         const wz = e.y * CELL + CELL / 2;
 
-        const mat = new THREE.SpriteMaterial({ map: guardTile(0, 0), transparent: true, alphaTest: 0.5 });
+        const initialMap = e.type === 'dog' ? dogWalkFrames[0] : guardTile(0, 0);
+        const mat = new THREE.SpriteMaterial({ map: initialMap, transparent: true, alphaTest: 0.5 });
         if (typeDef.tint) mat.color.copy(typeDef.tint);
         const sp = new THREE.Sprite(mat);
         sp.position.set(wx, typeDef.scale[1] / 2, wz);
@@ -681,6 +715,8 @@ function loadLevel(levelIdx) {
         EYE_H,
         lvl.spawnY * CELL + CELL / 2
     );
+    playerY = EYE_H;
+    playerVelY = 0;
     // Spawn angle: 0=east, 90=north, 180=west, 270=south (original Wolf3D)
     // In our system: yaw=0 faces -Z (north), yaw=-PI/2 faces +X (east)
     yaw = ((lvl.spawnAngle || 0) - 90) * Math.PI / 180;
@@ -772,10 +808,20 @@ function setEnemyTexture(e, tex) {
     }
 }
 
+function getEnemyDeathFrames(e) {
+    return e.userData.enemyType === 'dog' ? dogDeathFrames : guardDeathFrames;
+}
+
+function getEnemyDeathPose(e) {
+    return e.userData.enemyType === 'dog' ? dogDeathPose : guardDeathPose;
+}
+
 function setEnemyDeathFrame(e, frameIdx) {
-    const idx = Math.max(0, Math.min(frameIdx, guardDeathFrames.length - 1));
-    const pose = guardDeathPose[idx];
-    setEnemyTexture(e, guardDeathFrames[idx]);
+    const frames = getEnemyDeathFrames(e);
+    const poses = getEnemyDeathPose(e);
+    const idx = Math.max(0, Math.min(frameIdx, frames.length - 1));
+    const pose = poses[Math.min(idx, poses.length - 1)];
+    setEnemyTexture(e, frames[idx]);
     e.scale.set(e.userData.baseScaleX * pose.sx, e.userData.baseScaleY * pose.sy, 1);
     e.position.y = e.userData.baseScaleY * pose.y;
 }
@@ -1193,8 +1239,9 @@ function alertNearbyEnemies(wx, wz, radius) {
 
 function updateEnemySprite(e) {
     const ai = e.userData.aiState;
+    const deathFrames = getEnemyDeathFrames(e);
     if (ai === AI.DEAD) {
-        setEnemyDeathFrame(e, guardDeathFrames.length - 1);
+        setEnemyDeathFrame(e, deathFrames.length - 1);
         return;
     }
 
@@ -1204,13 +1251,15 @@ function updateEnemySprite(e) {
     }
 
     if (ai === AI.ATTACK) {
-        const tex = e.userData.attackPhase === 'fire' ? guardShootFireTex : guardShootAimTex;
+        const tex = e.userData.enemyType === 'dog'
+            ? (e.userData.attackPhase === 'fire' ? dogJumpFrames[1] : dogJumpFrames[0])
+            : (e.userData.attackPhase === 'fire' ? guardShootFireTex : guardShootAimTex);
         setEnemyTexture(e, tex);
         return;
     }
 
     if (ai === AI.PAIN) {
-        setEnemyTexture(e, guardPainTex);
+        setEnemyTexture(e, e.userData.enemyType === 'dog' ? dogJumpFrames[0] : guardPainTex);
         return;
     }
 
@@ -1242,14 +1291,22 @@ function updateEnemySprite(e) {
     // Map to 8-directional frame (0 = facing camera, 4 = facing away)
     let frame = Math.round((relAngle + Math.PI) / (2 * Math.PI) * 8) % 8;
 
-    let frameRow = 0;
-    if (ai === AI.CHASE || ai === AI.PATROL || ai === AI.INVESTIGATE || ai === AI.DODGE) {
-        frameRow = 1 + (Math.floor(e.userData.walkFrame) % 4);
-    } else if (ai === AI.DOOR_WAIT) {
-        frameRow = 0;
+    let tex;
+    if (e.userData.enemyType === 'dog') {
+        let walkStep = 0;
+        if (ai === AI.CHASE || ai === AI.PATROL || ai === AI.INVESTIGATE || ai === AI.DODGE) {
+            walkStep = Math.floor(e.userData.walkFrame) % 4;
+        }
+        tex = dogWalkFrames[Math.min(walkStep * 8 + frame, dogWalkFrames.length - 1)];
+    } else {
+        let frameRow = 0;
+        if (ai === AI.CHASE || ai === AI.PATROL || ai === AI.INVESTIGATE || ai === AI.DODGE) {
+            frameRow = 1 + (Math.floor(e.userData.walkFrame) % 4);
+        } else if (ai === AI.DOOR_WAIT) {
+            frameRow = 0;
+        }
+        tex = guardFrames[Math.min(frameRow * 8 + frame, guardFrames.length - 1)];
     }
-
-    const tex = guardFrames[Math.min(frameRow * 8 + frame, guardFrames.length - 1)];
     setEnemyTexture(e, tex);
 }
 
@@ -1324,14 +1381,14 @@ function updateEnemies(dt) {
 
     for (const e of levelEnemies) {
         if (e.userData.aiState === AI.DEAD) {
-            setEnemyDeathFrame(e, guardDeathFrames.length - 1);
+            setEnemyDeathFrame(e, getEnemyDeathFrames(e).length - 1);
             continue;
         }
 
         if (e.userData.aiState === AI.DYING) {
             e.userData.deathFrameTimer -= dt;
             if (e.userData.deathFrameTimer <= 0) {
-                if (e.userData.deathFrame < guardDeathFrames.length - 1) {
+                if (e.userData.deathFrame < getEnemyDeathFrames(e).length - 1) {
                     e.userData.deathFrame++;
                     e.userData.deathFrameTimer = 0.12;
                 } else {
@@ -1990,6 +2047,8 @@ const keys = {};
 let pointerLocked = false;
 let yaw = Math.PI, pitch = 0;
 let mouseDown = false;
+let playerY = EYE_H;
+let playerVelY = 0;
 
 document.addEventListener('keydown', e => { keys[e.code] = true; });
 document.addEventListener('keyup', e => { keys[e.code] = false; });
@@ -2021,7 +2080,14 @@ document.addEventListener('keydown', e => {
         state.minimapVisible = !state.minimapVisible;
         document.getElementById('minimap').style.display = state.minimapVisible ? 'block' : 'none';
     }
-    if (e.code === 'KeyE' || e.code === 'Space') tryOpenDoor();
+    if (e.code === 'KeyE') tryOpenDoor();
+    if (e.code === 'Space') {
+        e.preventDefault();
+        if (!pointerLocked || gameOver) return;
+        if (!e.repeat && playerY <= EYE_H + 0.001 && playerVelY === 0) {
+            playerVelY = JUMP_VELOCITY;
+        }
+    }
 });
 
 // ─── Minimap ────────────────────────────────────
@@ -2143,6 +2209,7 @@ function gameLoop() {
     if (keys['KeyA'] || keys['ArrowLeft']) mv.sub(right);
     if (keys['KeyD'] || keys['ArrowRight']) mv.add(right);
 
+    let bobPhase = 0;
     if (mv.length() > 0) {
         mv.normalize().multiplyScalar(speed);
         const nx = camera.position.x + mv.x, nz = camera.position.z + mv.z;
@@ -2157,13 +2224,26 @@ function gameLoop() {
             !isBlocked(camera.position.x + r, nz + r) && !isBlocked(camera.position.x - r, nz - r) &&
             !isBlocked(camera.position.x + r, nz - r) && !isBlocked(camera.position.x - r, nz + r))
             camera.position.z = nz;
-
-        camera.position.y = EYE_H + Math.sin(clock.elapsedTime * 8) * 0.04;
-        placeWeaponSprite(Math.sin(clock.elapsedTime * 8) * 2, Math.abs(Math.sin(clock.elapsedTime * 8)) * 4);
-    } else {
-        camera.position.y = EYE_H;
-        placeWeaponSprite(0, 0);
     }
+
+    // Jump/gravity physics (space to jump)
+    playerVelY -= PLAYER_GRAVITY * dt;
+    playerY += playerVelY * dt;
+    if (playerY <= EYE_H) {
+        playerY = EYE_H;
+        if (playerVelY < 0) playerVelY = 0;
+    }
+
+    const onGround = playerY <= EYE_H + 0.0001 && playerVelY === 0;
+    if (mv.length() > 0 && onGround) {
+        bobPhase = Math.sin(clock.elapsedTime * 8);
+        placeWeaponSprite(bobPhase * 2, Math.abs(bobPhase) * 4);
+        camera.position.y = playerY + bobPhase * 0.04;
+    } else {
+        placeWeaponSprite(0, 0);
+        camera.position.y = playerY;
+    }
+
     const moved = Math.hypot(camera.position.x - prevPlayerX, camera.position.z - prevPlayerZ);
     playerMoveSpeed = dt > 0 ? moved / dt : 0;
 
