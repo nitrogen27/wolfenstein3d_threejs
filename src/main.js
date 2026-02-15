@@ -24,11 +24,18 @@ const PLAYER_GRAVITY = 15.0;
 const state = {
     health: MAX_HEALTH, ammo: START_AMMO, score: 0, lives: 3,
     weapon: 'pistol', keys: { gold: false, silver: false },
-    episode: 0, level: 0,
+    episode: 0, level: 0, difficulty: 2,
     shooting: false, shootCooldown: 0,
     minimapVisible: true,
     moveSpeed: 4.0, runMultiplier: 1.8, mouseSensitivity: 0.002,
 };
+
+const DIFFICULTIES = [
+    { id: 0, name: 'Can I play, Daddy?', speedMul: 0.85, damageMul: 0.65, cooldownMul: 1.25, accMul: 0.85 },
+    { id: 1, name: "Don't hurt me.", speedMul: 0.95, damageMul: 0.85, cooldownMul: 1.10, accMul: 0.95 },
+    { id: 2, name: "Bring 'em on!", speedMul: 1.0, damageMul: 1.0, cooldownMul: 1.0, accMul: 1.0 },
+    { id: 3, name: 'I am Death incarnate!', speedMul: 1.12, damageMul: 1.18, cooldownMul: 0.85, accMul: 1.12 },
+];
 
 // ─── Audio System ───────────────────────────────
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -97,6 +104,10 @@ const MUSIC_TRACKS = [
 
 async function playMusic(idx) {
     const url = MUSIC_TRACKS[idx % MUSIC_TRACKS.length];
+    await playMusicUrl(url);
+}
+
+async function playMusicUrl(url) {
     if (currentMusic === url) return;
     currentMusic = url;
     if (musicSource) { try { musicSource.stop(); } catch {} }
@@ -107,6 +118,12 @@ async function playMusic(idx) {
     musicSource.loop = true;
     musicSource.connect(musicGain);
     musicSource.start();
+}
+
+function stopMusic() {
+    if (musicSource) { try { musicSource.stop(); } catch {} }
+    musicSource = null;
+    currentMusic = null;
 }
 
 const SFX = {
@@ -498,6 +515,16 @@ function clearLevel() {
     levelWalls = null;
 }
 
+function getDifficultyConfig() {
+    return DIFFICULTIES.find(d => d.id === state.difficulty) || DIFFICULTIES[2];
+}
+
+function shouldSpawnEnemyOnDifficulty(enemyDef) {
+    // Enemy records with difficulty:1/2 are medium/hard additions from map decode.
+    if (!Number.isFinite(enemyDef?.difficulty)) return true;
+    return enemyDef.difficulty <= state.difficulty;
+}
+
 function getPickupScale(pickupType) {
     switch (pickupType) {
         case 'ammo': return 0.66;
@@ -536,6 +563,7 @@ function loadLevel(levelIdx) {
     clearLevel();
     const lvl = LEVELS[levelIdx];
     if (!lvl) { console.error('Level not found:', levelIdx); return; }
+    levelLoaded = true;
 
     levelWalls = lvl.walls.slice(); // copy
 
@@ -669,9 +697,24 @@ function loadLevel(levelIdx) {
     }
 
     // Enemies
+    const diffCfg = getDifficultyConfig();
     for (const e of lvl.enemies) {
-        const typeDef = ENEMY_TYPES[e.type];
-        if (!typeDef) continue;
+        if (!shouldSpawnEnemyOnDifficulty(e)) continue;
+        const baseType = ENEMY_TYPES[e.type];
+        if (!baseType) continue;
+        const typeDef = {
+            ...baseType,
+            speed: baseType.speed * diffCfg.speedMul,
+            dmg: [
+                Math.max(1, Math.round(baseType.dmg[0] * diffCfg.damageMul)),
+                Math.max(1, Math.round(baseType.dmg[1] * diffCfg.damageMul)),
+            ],
+            cooldown: [
+                Math.max(0.08, baseType.cooldown[0] * diffCfg.cooldownMul),
+                Math.max(0.12, baseType.cooldown[1] * diffCfg.cooldownMul),
+            ],
+            acc: Math.min(0.98, baseType.acc * diffCfg.accMul),
+        };
         const wx = e.x * CELL + CELL / 2;
         const wz = e.y * CELL + CELL / 2;
 
@@ -2049,19 +2092,706 @@ let yaw = Math.PI, pitch = 0;
 let mouseDown = false;
 let playerY = EYE_H;
 let playerVelY = 0;
+let gameOver = false;
+let menuOpen = true;
+let menuMode = 'title'; // title | main | episode | difficulty | settings | controls | pause | death
+let menuSelected = 0;
+let menuPrevMode = 'main'; // for settings "back" to return to correct parent
+let menuTime = 0; // for blink animations
 
-document.addEventListener('keydown', e => { keys[e.code] = true; });
-document.addEventListener('keyup', e => { keys[e.code] = false; });
-document.addEventListener('click', () => {
-    if (!pointerLocked) {
-        renderer.domElement.requestPointerLock();
-        if (audioCtx.state === 'suspended') audioCtx.resume();
+// ─── Menu Canvas System ────────────────────────────
+const menuOverlay = document.getElementById('menu-overlay');
+const menuCanvas = document.getElementById('menu-canvas');
+const mMenuCtx = menuCanvas.getContext('2d');
+const MENU_W = 640, MENU_H = 400;
+
+// Episodes
+const EPISODES = [
+    { name: 'Escape from Wolfenstein', startLevel: 0 },
+    { name: 'Operation: Eisenfaust',   startLevel: 10 },
+    { name: 'Die, Fuhrer, Die!',       startLevel: 20 },
+];
+
+// BJ face frame indices for difficulty screen (healthRow * 3 + 1 for center face)
+const DIFF_FACE = [1, 4, 10, 22]; // healthy, slightly hurt, moderate, bloody
+
+// Settings state
+const settingsState = {
+    musicVol: 0.3,
+    sfxVol: 0.6,
+    sensitivity: 0.002,
+};
+const SETTINGS_ITEMS = [
+    { label: 'Music Volume',     key: 'musicVol',    min: 0, max: 0.5,   step: 0.05 },
+    { label: 'SFX Volume',       key: 'sfxVol',      min: 0, max: 1.0,   step: 0.1 },
+    { label: 'Mouse Sensitivity', key: 'sensitivity', min: 0.001, max: 0.005, step: 0.0004 },
+];
+
+// Load settings from localStorage
+function loadSettings() {
+    try {
+        const saved = JSON.parse(localStorage.getItem('wolf3d-settings') || '{}');
+        if (saved.musicVol !== undefined) settingsState.musicVol = saved.musicVol;
+        if (saved.sfxVol !== undefined) settingsState.sfxVol = saved.sfxVol;
+        if (saved.sensitivity !== undefined) settingsState.sensitivity = saved.sensitivity;
+    } catch {}
+    applySettings();
+}
+function applySettings() {
+    musicGain.gain.value = settingsState.musicVol;
+    sfxGain.gain.value = settingsState.sfxVol;
+    state.mouseSensitivity = settingsState.sensitivity;
+}
+function saveSettings() {
+    localStorage.setItem('wolf3d-settings', JSON.stringify(settingsState));
+    applySettings();
+}
+loadSettings();
+
+// ─── Menu Open/Close ────────────────────────
+function requestPointerLockAndAudio() {
+    if (!pointerLocked) renderer.domElement.requestPointerLock();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+function closeMenu() {
+    menuOpen = false;
+    menuOverlay.style.display = 'none';
+}
+
+function openMenu(mode = 'main') {
+    menuOpen = true;
+    menuMode = mode;
+    menuSelected = 0;
+    menuOverlay.style.display = 'flex';
+    // Play appropriate music for the mode
+    if (mode === 'title') {
+        playMusicUrl('/sounds/music/INTROCW3.ogg');
+    } else if (mode === 'main' || mode === 'episode' || mode === 'difficulty' || mode === 'settings' || mode === 'controls') {
+        playMusicUrl('/sounds/music/WONDERIN.ogg');
     }
-    if (gameOver && !pointerLocked) restartGame();
+}
+
+// ─── Menu Item Definitions per Mode ────────
+function getMenuItemCount() {
+    switch (menuMode) {
+        case 'title': return 0;
+        case 'main': return 4; // New Game, Difficulty, Settings, Controls
+        case 'episode': return EPISODES.length + 1; // episodes + Back
+        case 'difficulty': return DIFFICULTIES.length + 1; // difficulties + Back
+        case 'settings': return SETTINGS_ITEMS.length + 1; // sliders + Back
+        case 'controls': return 1; // Back
+        case 'pause': return 3; // Resume, Settings, Quit
+        case 'death': return 2; // Try Again, Main Menu
+        default: return 0;
+    }
+}
+
+function executeMenuItem(idx) {
+    switch (menuMode) {
+        case 'main':
+            if (idx === 0) openMenu('episode'); // New Game
+            else if (idx === 1) openMenu('difficulty'); // Difficulty
+            else if (idx === 2) { menuPrevMode = 'main'; openMenu('settings'); } // Settings
+            else if (idx === 3) openMenu('controls'); // Controls
+            break;
+        case 'episode':
+            if (idx < EPISODES.length) {
+                state.episode = idx;
+                state.level = 0;
+                openMenu('difficulty');
+            } else openMenu('main'); // Back
+            break;
+        case 'difficulty':
+            if (idx < DIFFICULTIES.length) {
+                state.difficulty = idx;
+                startNewGame();
+            } else openMenu('episode'); // Back
+            break;
+        case 'settings':
+            if (idx === SETTINGS_ITEMS.length) openMenu(menuPrevMode); // Back
+            break;
+        case 'controls':
+            openMenu('main'); // Back
+            break;
+        case 'pause':
+            if (idx === 0) { closeMenu(); requestPointerLockAndAudio(); } // Resume
+            else if (idx === 1) { menuPrevMode = 'pause'; openMenu('settings'); } // Settings
+            else if (idx === 2) { stopMusic(); openMenu('main'); } // Quit
+            break;
+        case 'death':
+            if (idx === 0) restartLevel(); // Try Again
+            else if (idx === 1) { stopMusic(); openMenu('main'); } // Main Menu
+            break;
+    }
+}
+
+function startNewGame() {
+    for (const k of Object.keys(keys)) keys[k] = false;
+    mouseDown = false;
+    state.health = MAX_HEALTH; state.ammo = START_AMMO; state.score = 0;
+    state.weapon = 'pistol'; state.lives = 3;
+    state.keys = { gold: false, silver: false };
+    state.level = 0;
+    state.shootCooldown = 0;
+    playerMoveSpeed = 0;
+    gameOver = false;
+    document.getElementById('damage-overlay').style.opacity = '0';
+    document.getElementById('damage-overlay').style.background = 'radial-gradient(ellipse at center, transparent 50%, rgba(139,0,0,0.4) 100%)';
+    const levelIdx = state.episode * 10 + state.level;
+    loadLevel(levelIdx);
+    closeMenu();
+    requestPointerLockAndAudio();
+}
+
+function restartLevel() {
+    for (const k of Object.keys(keys)) keys[k] = false;
+    mouseDown = false;
+    state.health = MAX_HEALTH; state.ammo = START_AMMO;
+    state.weapon = 'pistol';
+    state.keys = { gold: false, silver: false };
+    state.shootCooldown = 0;
+    playerMoveSpeed = 0;
+    gameOver = false;
+    document.getElementById('damage-overlay').style.opacity = '0';
+    document.getElementById('damage-overlay').style.background = 'radial-gradient(ellipse at center, transparent 50%, rgba(139,0,0,0.4) 100%)';
+    loadLevel(state.episode * 10 + state.level);
+    closeMenu();
+    requestPointerLockAndAudio();
+}
+
+// ─── Canvas Menu Drawing ────────────────────
+
+function resizeMenuCanvas() {
+    const aspect = MENU_W / MENU_H;
+    const ww = window.innerWidth, wh = window.innerHeight;
+    const windowAspect = ww / wh;
+    let w, h;
+    if (windowAspect > aspect) {
+        h = wh; w = h * aspect;
+    } else {
+        w = ww; h = w / aspect;
+    }
+    menuCanvas.style.width = Math.floor(w) + 'px';
+    menuCanvas.style.height = Math.floor(h) + 'px';
+}
+resizeMenuCanvas();
+window.addEventListener('resize', resizeMenuCanvas);
+
+function drawMenuText(text, x, y, size, color, align = 'left') {
+    mMenuCtx.font = `bold ${size}px "Courier New", monospace`;
+    mMenuCtx.textAlign = align;
+    mMenuCtx.textBaseline = 'top';
+    // Shadow
+    mMenuCtx.fillStyle = '#000';
+    mMenuCtx.fillText(text, x + 2, y + 2);
+    // Main text
+    mMenuCtx.fillStyle = color;
+    mMenuCtx.fillText(text, x, y);
+}
+
+function drawMenuBg() {
+    // Wolf3D dark blue/grey background
+    mMenuCtx.fillStyle = '#292929';
+    mMenuCtx.fillRect(0, 0, MENU_W, MENU_H);
+    // Red border
+    mMenuCtx.strokeStyle = '#8B0000';
+    mMenuCtx.lineWidth = 4;
+    mMenuCtx.strokeRect(4, 4, MENU_W - 8, MENU_H - 8);
+    // Inner border
+    mMenuCtx.strokeStyle = '#555';
+    mMenuCtx.lineWidth = 1;
+    mMenuCtx.strokeRect(10, 10, MENU_W - 20, MENU_H - 20);
+}
+
+function drawMenuHeader(title) {
+    // Blue header stripe
+    const grad = mMenuCtx.createLinearGradient(0, 16, 0, 56);
+    grad.addColorStop(0, '#0000AA');
+    grad.addColorStop(1, '#000066');
+    mMenuCtx.fillStyle = grad;
+    mMenuCtx.fillRect(14, 16, MENU_W - 28, 44);
+    // Header border
+    mMenuCtx.strokeStyle = '#4444FF';
+    mMenuCtx.lineWidth = 2;
+    mMenuCtx.strokeRect(14, 16, MENU_W - 28, 44);
+    // Title text
+    drawMenuText(title, MENU_W / 2, 24, 26, '#FFFFFF', 'center');
+}
+
+function drawMenuItem(text, y, isActive, idx) {
+    if (isActive) {
+        // Selected highlight bg
+        mMenuCtx.fillStyle = 'rgba(100,100,200,0.15)';
+        mMenuCtx.fillRect(60, y - 2, MENU_W - 120, 30);
+        // Yellow arrow cursor
+        drawMenuText('\u25B6', 50, y, 22, '#FFD700', 'left');
+        drawMenuText(text, 80, y, 20, '#FFD700', 'left');
+    } else {
+        drawMenuText(text, 80, y, 20, '#AAAAAA', 'left');
+    }
+}
+
+function drawMenuCanvas(dt) {
+    menuTime += dt;
+    mMenuCtx.clearRect(0, 0, MENU_W, MENU_H);
+    const itemCount = getMenuItemCount();
+    if (menuSelected >= itemCount && itemCount > 0) menuSelected = itemCount - 1;
+    if (menuSelected < 0) menuSelected = 0;
+
+    switch (menuMode) {
+        case 'title': drawTitleScreen(); break;
+        case 'main': drawMainMenu(); break;
+        case 'episode': drawEpisodeMenu(); break;
+        case 'difficulty': drawDifficultyMenu(); break;
+        case 'settings': drawSettingsMenu(); break;
+        case 'controls': drawControlsMenu(); break;
+        case 'pause': drawPauseMenu(); break;
+        case 'death': drawDeathMenu(); break;
+    }
+}
+
+// ─── Title Screen ──────────────────────
+function drawTitleScreen() {
+    // Dark background with red gradient
+    const grad = mMenuCtx.createRadialGradient(MENU_W/2, MENU_H/2, 50, MENU_W/2, MENU_H/2, 350);
+    grad.addColorStop(0, '#1a0000');
+    grad.addColorStop(1, '#000000');
+    mMenuCtx.fillStyle = grad;
+    mMenuCtx.fillRect(0, 0, MENU_W, MENU_H);
+
+    // Decorative red border
+    mMenuCtx.strokeStyle = '#8B0000';
+    mMenuCtx.lineWidth = 6;
+    mMenuCtx.strokeRect(6, 6, MENU_W - 12, MENU_H - 12);
+    mMenuCtx.strokeStyle = '#CC0000';
+    mMenuCtx.lineWidth = 2;
+    mMenuCtx.strokeRect(12, 12, MENU_W - 24, MENU_H - 24);
+
+    // Title "WOLFENSTEIN 3D"
+    mMenuCtx.font = 'bold 54px "Courier New", monospace';
+    mMenuCtx.textAlign = 'center';
+    mMenuCtx.textBaseline = 'top';
+    // Multiple shadows for emboss
+    mMenuCtx.fillStyle = '#000';
+    mMenuCtx.fillText('WOLFENSTEIN 3D', MENU_W/2 + 4, 44);
+    mMenuCtx.fillStyle = '#660000';
+    mMenuCtx.fillText('WOLFENSTEIN 3D', MENU_W/2 + 2, 42);
+    mMenuCtx.fillStyle = '#CC0000';
+    mMenuCtx.fillText('WOLFENSTEIN 3D', MENU_W/2, 40);
+
+    // BJ Face large in center
+    if (bjImg.complete && bjImg.naturalWidth > 0) {
+        const fw = bjImg.naturalWidth / 24;
+        const fh = bjImg.naturalHeight;
+        const faceIdx = 1; // healthy center face
+        const drawSize = 120;
+        const dx = (MENU_W - drawSize) / 2;
+        const dy = 130;
+        // Gold frame around face
+        mMenuCtx.strokeStyle = '#B8860B';
+        mMenuCtx.lineWidth = 3;
+        mMenuCtx.strokeRect(dx - 4, dy - 4, drawSize + 8, drawSize + 8);
+        mMenuCtx.imageSmoothingEnabled = false;
+        mMenuCtx.drawImage(bjImg, faceIdx * fw, 0, fw, fh, dx, dy, drawSize, drawSize);
+    }
+
+    // Subtitle
+    drawMenuText('A Three.js Tribute', MENU_W/2, 270, 16, '#888888', 'center');
+
+    // Blinking "PRESS ANY KEY"
+    const blink = Math.sin(menuTime * 3) > 0;
+    if (blink) {
+        drawMenuText('PRESS ANY KEY', MENU_W/2, 320, 24, '#FF4444', 'center');
+    }
+
+    // Bottom credits
+    drawMenuText('id Software \u00A9 1992', MENU_W/2, 370, 12, '#555555', 'center');
+}
+
+// ─── Main Menu ──────────────────────────
+function drawMainMenu() {
+    drawMenuBg();
+    drawMenuHeader('WOLFENSTEIN 3D');
+
+    const items = ['New Game', 'Difficulty', 'Settings', 'Controls'];
+    const startY = 100;
+    const gap = 40;
+    for (let i = 0; i < items.length; i++) {
+        drawMenuItem(items[i], startY + i * gap, i === menuSelected, i);
+    }
+
+    // Current difficulty display
+    const diffName = getDifficultyConfig().name;
+    drawMenuText(`Skill: ${diffName}`, MENU_W/2, 300, 14, '#666666', 'center');
+
+    // Hint
+    drawMenuText('[ \u2191\u2193 Navigate  Enter Select ]', MENU_W/2, 370, 13, '#555555', 'center');
+}
+
+// ─── Episode Selection ──────────────────
+function drawEpisodeMenu() {
+    drawMenuBg();
+    drawMenuHeader('WHICH EPISODE?');
+
+    const startY = 90;
+    const gap = 44;
+    for (let i = 0; i < EPISODES.length; i++) {
+        const label = `Episode ${i + 1}: ${EPISODES[i].name}`;
+        drawMenuItem(label, startY + i * gap, i === menuSelected, i);
+    }
+    drawMenuItem('Back', startY + EPISODES.length * gap + 10, menuSelected === EPISODES.length, EPISODES.length);
+
+    drawMenuText('[ \u2191\u2193 Navigate  Enter Select  Esc Back ]', MENU_W/2, 370, 13, '#555555', 'center');
+}
+
+// ─── Difficulty Selection with BJ Faces ──
+function drawDifficultyMenu() {
+    drawMenuBg();
+    drawMenuHeader('HOW TOUGH ARE YOU?');
+
+    const startY = 90;
+    const gap = 38;
+
+    // Draw BJ face for current selection on the right
+    if (bjImg.complete && bjImg.naturalWidth > 0 && menuSelected < DIFFICULTIES.length) {
+        const fw = bjImg.naturalWidth / 24;
+        const fh = bjImg.naturalHeight;
+        const faceIdx = DIFF_FACE[menuSelected];
+        const drawSize = 96;
+        const dx = MENU_W - 160;
+        const dy = 100;
+        mMenuCtx.strokeStyle = '#B8860B';
+        mMenuCtx.lineWidth = 2;
+        mMenuCtx.strokeRect(dx - 3, dy - 3, drawSize + 6, drawSize + 6);
+        mMenuCtx.imageSmoothingEnabled = false;
+        mMenuCtx.drawImage(bjImg, faceIdx * fw, 0, fw, fh, dx, dy, drawSize, drawSize);
+    }
+
+    for (let i = 0; i < DIFFICULTIES.length; i++) {
+        drawMenuItem(DIFFICULTIES[i].name, startY + i * gap, i === menuSelected, i);
+    }
+    drawMenuItem('Back', startY + DIFFICULTIES.length * gap + 10, menuSelected === DIFFICULTIES.length, DIFFICULTIES.length);
+
+    drawMenuText('[ \u2191\u2193 Navigate  Enter Select  Esc Back ]', MENU_W/2, 370, 13, '#555555', 'center');
+}
+
+// ─── Settings Screen ────────────────────
+function drawSettingsMenu() {
+    drawMenuBg();
+    drawMenuHeader('SETTINGS');
+
+    const startY = 100;
+    const gap = 55;
+
+    for (let i = 0; i < SETTINGS_ITEMS.length; i++) {
+        const s = SETTINGS_ITEMS[i];
+        const val = settingsState[s.key];
+        const pct = Math.round(((val - s.min) / (s.max - s.min)) * 100);
+        const isActive = i === menuSelected;
+        const y = startY + i * gap;
+
+        // Label
+        drawMenuText(s.label, 80, y, 18, isActive ? '#FFD700' : '#AAAAAA', 'left');
+        if (isActive) drawMenuText('\u25B6', 50, y, 20, '#FFD700', 'left');
+
+        // Slider bar
+        const barX = 80, barY = y + 26, barW = 360, barH = 12;
+        mMenuCtx.fillStyle = '#1a1a1a';
+        mMenuCtx.fillRect(barX, barY, barW, barH);
+        mMenuCtx.strokeStyle = isActive ? '#FFD700' : '#555';
+        mMenuCtx.lineWidth = 1;
+        mMenuCtx.strokeRect(barX, barY, barW, barH);
+        // Filled portion
+        const fillW = (pct / 100) * barW;
+        const barGrad = mMenuCtx.createLinearGradient(barX, barY, barX + fillW, barY);
+        barGrad.addColorStop(0, isActive ? '#CC9900' : '#666');
+        barGrad.addColorStop(1, isActive ? '#FFD700' : '#888');
+        mMenuCtx.fillStyle = barGrad;
+        mMenuCtx.fillRect(barX, barY, fillW, barH);
+        // Percentage
+        drawMenuText(`${pct}%`, barX + barW + 16, y + 22, 16, isActive ? '#FFD700' : '#888', 'left');
+
+        // Arrow hints for active slider
+        if (isActive) {
+            drawMenuText('\u25C0', barX - 20, y + 22, 14, '#FFD700', 'right');
+            drawMenuText('\u25B6', barX + barW + 60, y + 22, 14, '#FFD700', 'left');
+        }
+    }
+
+    // Back
+    const backY = startY + SETTINGS_ITEMS.length * gap + 10;
+    drawMenuItem('Back', backY, menuSelected === SETTINGS_ITEMS.length, SETTINGS_ITEMS.length);
+
+    drawMenuText('[ \u2191\u2193 Navigate  \u2190\u2192 Adjust  Esc Back ]', MENU_W/2, 370, 13, '#555555', 'center');
+}
+
+// ─── Controls Screen ────────────────────
+function drawControlsMenu() {
+    drawMenuBg();
+    drawMenuHeader('CONTROLS');
+
+    const controls = [
+        ['W A S D', 'Move'],
+        ['Mouse', 'Look around'],
+        ['Left Click', 'Shoot'],
+        ['Space', 'Jump'],
+        ['E', 'Open doors / Use'],
+        ['M', 'Toggle minimap'],
+        ['Shift', 'Run'],
+        ['Esc', 'Pause menu'],
+    ];
+    const startY = 80;
+    const gap = 30;
+    for (let i = 0; i < controls.length; i++) {
+        const y = startY + i * gap;
+        drawMenuText(controls[i][0], 100, y, 17, '#FFD700', 'left');
+        drawMenuText('\u2014', 280, y, 17, '#555', 'left');
+        drawMenuText(controls[i][1], 310, y, 17, '#CCCCCC', 'left');
+    }
+
+    // Back
+    drawMenuItem('Back', 330, menuSelected === 0, 0);
+    drawMenuText('[ Enter / Esc to go back ]', MENU_W/2, 370, 13, '#555555', 'center');
+}
+
+// ─── Pause Menu ─────────────────────────
+function drawPauseMenu() {
+    // Semi-transparent background (game visible behind)
+    mMenuCtx.fillStyle = 'rgba(0,0,0,0.8)';
+    mMenuCtx.fillRect(0, 0, MENU_W, MENU_H);
+
+    drawMenuHeader('PAUSED');
+
+    const items = ['Resume', 'Settings', 'Quit to Menu'];
+    const startY = 120;
+    const gap = 44;
+    for (let i = 0; i < items.length; i++) {
+        drawMenuItem(items[i], startY + i * gap, i === menuSelected, i);
+    }
+
+    drawMenuText(`Floor ${state.episode * 10 + state.level + 1}  Score ${state.score}`, MENU_W/2, 310, 14, '#666', 'center');
+    drawMenuText('[ \u2191\u2193 Navigate  Enter Select ]', MENU_W/2, 370, 13, '#555555', 'center');
+}
+
+// ─── Death Screen ───────────────────────
+function drawDeathMenu() {
+    // Red-tinted background
+    mMenuCtx.fillStyle = 'rgba(40,0,0,0.9)';
+    mMenuCtx.fillRect(0, 0, MENU_W, MENU_H);
+
+    // "YOU DIED" title
+    mMenuCtx.font = 'bold 48px "Courier New", monospace';
+    mMenuCtx.textAlign = 'center';
+    mMenuCtx.textBaseline = 'top';
+    mMenuCtx.fillStyle = '#000';
+    mMenuCtx.fillText('YOU DIED', MENU_W/2 + 3, 43);
+    mMenuCtx.fillStyle = '#CC0000';
+    mMenuCtx.fillText('YOU DIED', MENU_W/2, 40);
+
+    // Dead BJ face
+    if (bjImg.complete && bjImg.naturalWidth > 0) {
+        const fw = bjImg.naturalWidth / 24;
+        const fh = bjImg.naturalHeight;
+        const faceIdx = 22; // bloody face
+        const drawSize = 80;
+        const dx = (MENU_W - drawSize) / 2;
+        const dy = 110;
+        mMenuCtx.imageSmoothingEnabled = false;
+        mMenuCtx.drawImage(bjImg, faceIdx * fw, 0, fw, fh, dx, dy, drawSize, drawSize);
+    }
+
+    // Score info
+    drawMenuText(`Score: ${state.score}  Floor: ${state.episode * 10 + state.level + 1}`, MENU_W/2, 210, 16, '#AA5555', 'center');
+
+    const items = ['Try Again', 'Main Menu'];
+    const startY = 260;
+    const gap = 44;
+    for (let i = 0; i < items.length; i++) {
+        drawMenuItem(items[i], startY + i * gap, i === menuSelected, i);
+    }
+}
+
+// ─── Menu Keyboard Handler ──────────────
+function handleMenuKey(e) {
+    if (!menuOpen) return false;
+
+    // Title screen: any key advances
+    if (menuMode === 'title') {
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        openMenu('main');
+        return true;
+    }
+
+    const itemCount = getMenuItemCount();
+
+    // Navigation
+    if (e.code === 'ArrowUp' || e.code === 'KeyW') {
+        menuSelected = (menuSelected - 1 + itemCount) % itemCount;
+        return true;
+    }
+    if (e.code === 'ArrowDown' || e.code === 'KeyS') {
+        menuSelected = (menuSelected + 1) % itemCount;
+        return true;
+    }
+
+    // Settings: left/right to adjust slider
+    if (menuMode === 'settings' && menuSelected < SETTINGS_ITEMS.length) {
+        const s = SETTINGS_ITEMS[menuSelected];
+        if (e.code === 'ArrowLeft') {
+            settingsState[s.key] = Math.max(s.min, settingsState[s.key] - s.step);
+            saveSettings();
+            return true;
+        }
+        if (e.code === 'ArrowRight') {
+            settingsState[s.key] = Math.min(s.max, settingsState[s.key] + s.step);
+            saveSettings();
+            return true;
+        }
+    }
+
+    // Confirm
+    if (e.code === 'Enter' || e.code === 'NumpadEnter' || e.code === 'Space') {
+        e.preventDefault();
+        executeMenuItem(menuSelected);
+        return true;
+    }
+
+    // Back / Escape
+    if (e.code === 'Escape' || e.code === 'Backspace') {
+        if (menuMode === 'episode') openMenu('main');
+        else if (menuMode === 'difficulty') openMenu('episode');
+        else if (menuMode === 'settings') openMenu(menuPrevMode);
+        else if (menuMode === 'controls') openMenu('main');
+        else if (menuMode === 'pause') { closeMenu(); requestPointerLockAndAudio(); }
+        else if (menuMode === 'death') {} // Can't escape death screen
+        else if (menuMode === 'main') {} // Can't escape main menu
+        return true;
+    }
+
+    return false;
+}
+
+// ─── Mouse Click on Menu Canvas ─────────
+menuCanvas.addEventListener('click', (e) => {
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+
+    if (menuMode === 'title') {
+        openMenu('main');
+        return;
+    }
+
+    // Convert click to canvas logical coords
+    const rect = menuCanvas.getBoundingClientRect();
+    const scaleX = MENU_W / rect.width;
+    const scaleY = MENU_H / rect.height;
+    const cx = (e.clientX - rect.left) * scaleX;
+    const cy = (e.clientY - rect.top) * scaleY;
+
+    // Detect click on menu items based on Y position
+    let startY, gap;
+    const itemCount = getMenuItemCount();
+
+    switch (menuMode) {
+        case 'main': startY = 100; gap = 40; break;
+        case 'episode': startY = 90; gap = 44; break;
+        case 'difficulty': startY = 90; gap = 38; break;
+        case 'settings': startY = 100; gap = 55; break;
+        case 'controls': startY = 330; gap = 40; break;
+        case 'pause': startY = 120; gap = 44; break;
+        case 'death': startY = 260; gap = 44; break;
+        default: return;
+    }
+
+    // Account for the shifted back items
+    for (let i = 0; i < itemCount; i++) {
+        let itemY = startY + i * gap;
+        // Back items sometimes have +10 offset
+        if (menuMode === 'episode' && i === EPISODES.length) itemY += 10;
+        if (menuMode === 'difficulty' && i === DIFFICULTIES.length) itemY += 10;
+        if (menuMode === 'settings' && i === SETTINGS_ITEMS.length) itemY += 10;
+
+        if (cy >= itemY - 4 && cy <= itemY + 28) {
+            menuSelected = i;
+            executeMenuItem(i);
+            return;
+        }
+    }
+});
+
+// Mouse hover on menu canvas to highlight items
+menuCanvas.addEventListener('mousemove', (e) => {
+    if (menuMode === 'title') return;
+    const rect = menuCanvas.getBoundingClientRect();
+    const scaleY = MENU_H / rect.height;
+    const cy = (e.clientY - rect.top) * scaleY;
+
+    let startY, gap;
+    const itemCount = getMenuItemCount();
+
+    switch (menuMode) {
+        case 'main': startY = 100; gap = 40; break;
+        case 'episode': startY = 90; gap = 44; break;
+        case 'difficulty': startY = 90; gap = 38; break;
+        case 'settings': startY = 100; gap = 55; break;
+        case 'controls': startY = 330; gap = 40; break;
+        case 'pause': startY = 120; gap = 44; break;
+        case 'death': startY = 260; gap = 44; break;
+        default: return;
+    }
+
+    for (let i = 0; i < itemCount; i++) {
+        let itemY = startY + i * gap;
+        if (menuMode === 'episode' && i === EPISODES.length) itemY += 10;
+        if (menuMode === 'difficulty' && i === DIFFICULTIES.length) itemY += 10;
+        if (menuMode === 'settings' && i === SETTINGS_ITEMS.length) itemY += 10;
+
+        if (cy >= itemY - 4 && cy <= itemY + 28) {
+            menuSelected = i;
+            return;
+        }
+    }
+});
+
+// ─── Event Listeners ────────────────────
+document.addEventListener('keydown', e => {
+    keys[e.code] = true;
+    if (handleMenuKey(e)) return;
+
+    if (e.code === 'Escape' && pointerLocked) {
+        document.exitPointerLock();
+        openMenu(gameOver ? 'death' : 'pause');
+        return;
+    }
+
+    if (e.code === 'KeyM' && pointerLocked) {
+        state.minimapVisible = !state.minimapVisible;
+        document.getElementById('minimap').style.display = state.minimapVisible ? 'block' : 'none';
+    }
+    if (e.code === 'KeyE' && pointerLocked && !gameOver) tryOpenDoor();
+    if (e.code === 'Space') {
+        e.preventDefault();
+        if (!pointerLocked || gameOver) return;
+        if (!e.repeat && playerY <= EYE_H + 0.001 && playerVelY === 0) {
+            playerVelY = JUMP_VELOCITY;
+        }
+    }
+});
+document.addEventListener('keyup', e => { keys[e.code] = false; });
+document.addEventListener('click', (e) => {
+    // Only re-lock pointer if clicking outside menu canvas when menu is closed
+    if (!menuOpen && !pointerLocked) {
+        requestPointerLockAndAudio();
+    }
 });
 document.addEventListener('pointerlockchange', () => {
     pointerLocked = document.pointerLockElement === renderer.domElement;
-    document.getElementById('instructions').style.display = pointerLocked ? 'none' : 'flex';
+    if (pointerLocked) {
+        closeMenu();
+    } else if (!menuOpen && levelLoaded) {
+        // Pointer lost (e.g. user pressed Escape or clicked away) — show pause menu
+        openMenu(gameOver ? 'death' : 'pause');
+    }
 });
 document.addEventListener('mousemove', e => {
     if (!pointerLocked) return;
@@ -2075,20 +2805,6 @@ document.addEventListener('mousedown', e => {
     if (pointerLocked && e.button === 0) { mouseDown = true; shoot(); }
 });
 document.addEventListener('mouseup', e => { if (e.button === 0) mouseDown = false; });
-document.addEventListener('keydown', e => {
-    if (e.code === 'KeyM') {
-        state.minimapVisible = !state.minimapVisible;
-        document.getElementById('minimap').style.display = state.minimapVisible ? 'block' : 'none';
-    }
-    if (e.code === 'KeyE') tryOpenDoor();
-    if (e.code === 'Space') {
-        e.preventDefault();
-        if (!pointerLocked || gameOver) return;
-        if (!e.repeat && playerY <= EYE_H + 0.001 && playerVelY === 0) {
-            playerVelY = JUMP_VELOCITY;
-        }
-    }
-});
 
 // ─── Minimap ────────────────────────────────────
 const mmCanvas = document.getElementById('minimap');
@@ -2144,7 +2860,6 @@ function drawMinimap() {
 }
 
 // ─── Death / Restart ────────────────────────────
-let gameOver = false;
 
 function checkGameOver() {
     if (state.health <= 0 && !gameOver) {
@@ -2152,48 +2867,42 @@ function checkGameOver() {
         document.getElementById('damage-overlay').style.opacity = '0.8';
         document.getElementById('damage-overlay').style.background = 'rgba(139,0,0,0.7)';
         setTimeout(() => {
-            const inst = document.getElementById('instructions');
-            inst.querySelector('h1').textContent = 'YOU DIED';
-            inst.querySelector('h2').textContent = `Score: ${state.score} | Floor: ${state.episode * 10 + state.level + 1}`;
-            inst.querySelector('.start-msg').textContent = '[ Click to Restart ]';
             document.exitPointerLock();
+            openMenu('death');
         }, 1000);
     }
 }
 
-function restartGame() {
-    state.health = MAX_HEALTH; state.ammo = START_AMMO; state.score = 0;
-    state.weapon = 'pistol'; state.lives = 3;
-    state.keys = { gold: false, silver: false };
-    state.episode = 0; state.level = 0;
-    state.shootCooldown = 0;
-    playerMoveSpeed = 0;
-    gameOver = false;
-
-    document.getElementById('damage-overlay').style.opacity = '0';
-    document.getElementById('damage-overlay').style.background = 'radial-gradient(ellipse at center, transparent 50%, rgba(139,0,0,0.4) 100%)';
-    const inst = document.getElementById('instructions');
-    inst.querySelector('h1').textContent = 'WOLFENSTEIN 3D';
-    inst.querySelector('h2').textContent = 'Three.js Edition';
-    inst.querySelector('.start-msg').textContent = '[ Click to Start ]';
-
-    loadLevel(0);
-}
-
 // ─── Init ───────────────────────────────────────
-loadLevel(0);
+// Don't load a level yet — wait for user to select episode/difficulty via menu
+openMenu('title');
 
 // ─── Game Loop ──────────────────────────────────
 const clock = new THREE.Clock();
+let levelLoaded = false;
 
 function gameLoop() {
     requestAnimationFrame(gameLoop);
     const dt = Math.min(clock.getDelta(), 0.1);
 
+    // Draw menu when open
+    if (menuOpen) {
+        drawMenuCanvas(dt);
+        // Still render game scene behind pause/death menus
+        if (levelLoaded && (menuMode === 'pause' || menuMode === 'death')) {
+            drawHUD();
+            drawWeapon();
+            renderer.render(scene, camera);
+        }
+        return;
+    }
+
     if (!pointerLocked || gameOver) {
-        drawHUD();
-        drawWeapon();
-        renderer.render(scene, camera);
+        if (levelLoaded) {
+            drawHUD();
+            drawWeapon();
+            renderer.render(scene, camera);
+        }
         return;
     }
 
@@ -2309,7 +3018,7 @@ function gameLoop() {
     if (pickupFlashTimer > 0) pickupFlashTimer -= dt;
 
     updateEnemies(dt);
-    // Enemy muzzle flash now comes from sprite frame, no additive glow pass needed.
+    updateMuzzleFlashes(dt);
     checkPickups();
     checkElevator();
     checkGameOver();

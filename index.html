@@ -45,46 +45,19 @@
             pointer-events: none;
             text-shadow: 1px 1px 2px #000;
         }
-        #instructions {
+        #menu-overlay {
             position: fixed;
             top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(0,0,0,0.85);
+            z-index: 100;
             display: flex;
-            flex-direction: column;
             align-items: center;
             justify-content: center;
-            z-index: 100;
-            color: #fff;
-            font-family: 'Courier New', monospace;
+            background: #000;
         }
-        #instructions h1 {
-            font-size: 48px;
-            color: #cc0000;
-            text-shadow: 3px 3px #000;
-            margin-bottom: 10px;
-            letter-spacing: 4px;
-        }
-        #instructions h2 {
-            font-size: 18px;
-            color: #888;
-            margin-bottom: 40px;
-        }
-        #instructions .controls {
-            text-align: left;
-            font-size: 16px;
-            line-height: 2;
-            color: #ccc;
-        }
-        #instructions .controls span { color: #ffcc00; }
-        #instructions .start-msg {
-            margin-top: 40px;
-            font-size: 20px;
-            color: #ff4444;
-            animation: blink 1s infinite;
-        }
-        @keyframes blink {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.3; }
+        #menu-canvas {
+            image-rendering: pixelated;
+            image-rendering: -moz-crisp-edges;
+            image-rendering: crisp-edges;
         }
         #minimap {
             position: fixed;
@@ -106,18 +79,8 @@
     </style>
 </head>
 <body>
-    <div id="instructions">
-        <h1>WOLFENSTEIN 3D</h1>
-        <h2>Three.js Edition</h2>
-        <div class="controls">
-            <span>W A S D</span> — Move<br>
-            <span>Mouse</span> — Look around<br>
-            <span>Left Click</span> — Shoot<br>
-            <span>E / Space</span> — Open doors / Use<br>
-            <span>M</span> — Toggle minimap<br>
-            <span>Shift</span> — Run<br>
-        </div>
-        <div class="start-msg">[ Click to Start ]</div>
+    <div id="menu-overlay">
+        <canvas id="menu-canvas" width="640" height="400"></canvas>
     </div>
     <div id="crosshair">+</div>
     <div id="damage-overlay"></div>
