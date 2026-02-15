@@ -20,6 +20,14 @@ const DOOR_PASSABLE_OPEN = 0.8;
 const JUMP_VELOCITY = 4.6;
 const PLAYER_GRAVITY = 15.0;
 
+// ─── Multi-Story Constants ─────────────────────
+const STORY_H = 2;           // height of one story (same as WALL_H)
+const WALL_H_FULL = 4;       // full double-height wall
+const FLOOR_1_Y = 2;         // second floor Y position
+const RAILING_H = 1.2;       // railing height on balcony edges
+const MAX_STEP_UP = 0.55;    // max step height without stairs
+const STAIR_LERP_SPEED = 12; // player height lerp speed on stairs
+
 // ─── Game State ─────────────────────────────────
 const state = {
     health: MAX_HEALTH, ammo: START_AMMO, score: 0, lives: 3,
@@ -501,6 +509,12 @@ let playerMoveSpeed = 0;
 let hudScale = 1;
 let hudPixelHeight = HUD_BASE_H;
 
+// ─── Multi-Story Level State ───────────────────
+let levelFloorH = null;       // Float32Array[64*64] — floor heights per cell
+let levelUpperWalls = null;   // Uint8Array[64*64] — upper story walls
+let levelCeilingH = null;     // Float32Array[64*64] — ceiling heights per cell
+let levelIsMultiStory = false;
+
 const wallGeo = new THREE.BoxGeometry(CELL, WALL_H, CELL);
 
 // ─── Level Loading ──────────────────────────────
@@ -513,6 +527,10 @@ function clearLevel() {
     for (const l of levelLights) scene.remove(l);
     levelMeshes = []; levelDoors = []; levelEnemies = []; levelStatics = []; levelPickups = []; levelLights = [];
     levelWalls = null;
+    levelFloorH = null;
+    levelUpperWalls = null;
+    levelCeilingH = null;
+    levelIsMultiStory = false;
 }
 
 function getDifficultyConfig() {
@@ -537,11 +555,12 @@ function getPickupScale(pickupType) {
 }
 
 function addCeilingLamp(wx, wz, warm = false) {
+    const lampCeilH = levelIsMultiStory ? getCeilingHeight(wx, wz) : WALL_H;
     const cap = new THREE.Mesh(
         new THREE.CylinderGeometry(0.24, 0.20, 0.10, 10),
         new THREE.MeshLambertMaterial({ color: warm ? 0xa67a2a : 0x1e7f56 })
     );
-    cap.position.set(wx, WALL_H - 0.05, wz);
+    cap.position.set(wx, lampCeilH - 0.05, wz);
     scene.add(cap);
     levelMeshes.push(cap);
 
@@ -549,14 +568,170 @@ function addCeilingLamp(wx, wz, warm = false) {
         new THREE.SphereGeometry(0.10, 10, 8),
         new THREE.MeshBasicMaterial({ color: warm ? 0xffd872 : 0x5dff75 })
     );
-    bulb.position.set(wx, WALL_H - 0.16, wz);
+    bulb.position.set(wx, lampCeilH - 0.16, wz);
     scene.add(bulb);
     levelMeshes.push(bulb);
 
     const light = new THREE.PointLight(warm ? 0xffdf9c : 0x9dff8f, warm ? 0.55 : 0.65, warm ? 7 : 8);
-    light.position.set(wx, WALL_H - 0.22, wz);
+    light.position.set(wx, lampCeilH - 0.22, wz);
     scene.add(light);
     levelLights.push(light);
+}
+
+// ─── Multi-Story Geometry Builder ───────────────
+function buildMultiStoryGeometry(floorColor, ceilColor) {
+    const floorMat = new THREE.MeshBasicMaterial({ color: floorColor || 0x707070 });
+    const ceilMat = new THREE.MeshBasicMaterial({ color: ceilColor || 0x383838 });
+    const stairMat = new THREE.MeshBasicMaterial({ color: 0x8a7e6a }); // brownish stone stairs
+    const railMat = new THREE.MeshBasicMaterial({ color: 0x555555, transparent: true, opacity: 0.85 });
+    const floor2Mat = new THREE.MeshBasicMaterial({ color: 0x6a6050 }); // slightly different second floor
+
+    // Per-cell floor tiles at their respective heights
+    for (let gz = 0; gz < MAP_SIZE; gz++) {
+        for (let gx = 0; gx < MAP_SIZE; gx++) {
+            const idx = gz * MAP_SIZE + gx;
+            const w = levelWalls[idx];
+            if (w > 0) continue; // wall cell, no floor/ceiling needed
+
+            const fh = levelFloorH[idx];
+            const ch = levelCeilingH[idx];
+            const wx = gx * CELL + CELL / 2;
+            const wz = gz * CELL + CELL / 2;
+
+            // Floor tile
+            const floorTileGeo = new THREE.PlaneGeometry(CELL, CELL);
+            const isSecondFloor = fh >= FLOOR_1_Y - 0.3;
+            const isStair = fh > 0.1 && fh < FLOOR_1_Y - 0.3;
+            const floorTile = new THREE.Mesh(floorTileGeo,
+                isSecondFloor ? floor2Mat : (isStair ? stairMat : floorMat));
+            floorTile.rotation.x = -Math.PI / 2;
+            floorTile.position.set(wx, fh, wz);
+            scene.add(floorTile);
+            levelMeshes.push(floorTile);
+
+            // Ceiling tile
+            const ceilTileGeo = new THREE.PlaneGeometry(CELL, CELL);
+            const ceilTile = new THREE.Mesh(ceilTileGeo, ceilMat);
+            ceilTile.rotation.x = Math.PI / 2;
+            ceilTile.position.set(wx, ch, wz);
+            scene.add(ceilTile);
+            levelMeshes.push(ceilTile);
+
+            // Stair steps (for cells with intermediate floor heights)
+            if (isStair) {
+                buildStairSteps(gx, gz, fh, wx, wz, stairMat);
+            }
+
+            // Railings on second floor edges
+            if (isSecondFloor) {
+                buildRailings(gx, gz, fh, wx, wz, railMat);
+            }
+
+            // Floor-height transitions: add vertical face where floor height changes
+            buildFloorEdgeWalls(gx, gz, fh, wx, wz, floorMat, floor2Mat);
+        }
+    }
+}
+
+function buildStairSteps(gx, gz, fh, wx, wz, mat) {
+    // Determine stair direction by checking neighbors for height gradient
+    const neighbors = [
+        { dx: 0, dz: -1, dir: 'north' }, { dx: 0, dz: 1, dir: 'south' },
+        { dx: -1, dz: 0, dir: 'west' },  { dx: 1, dz: 0, dir: 'east' }
+    ];
+
+    let lowerNeighbor = null, higherNeighbor = null;
+    for (const n of neighbors) {
+        const nx = gx + n.dx, nz = gz + n.dz;
+        if (nx < 0 || nx >= MAP_SIZE || nz < 0 || nz >= MAP_SIZE) continue;
+        const nIdx = nz * MAP_SIZE + nx;
+        const nfh = levelFloorH[nIdx];
+        if (nfh < fh - 0.2 && (!lowerNeighbor || nfh < lowerNeighbor.h)) lowerNeighbor = { ...n, h: nfh };
+        if (nfh > fh + 0.2 && (!higherNeighbor || nfh > higherNeighbor.h)) higherNeighbor = { ...n, h: nfh };
+    }
+
+    // Build 4 visual steps within this cell
+    const STEP_COUNT = 4;
+    const stepH = fh / STEP_COUNT;
+    const stepD = CELL / STEP_COUNT;
+
+    // Determine stair axis: default to Z-axis (north-south)
+    const isXAxis = lowerNeighbor && (lowerNeighbor.dir === 'west' || lowerNeighbor.dir === 'east');
+    const invertDir = lowerNeighbor && (lowerNeighbor.dir === 'south' || lowerNeighbor.dir === 'east');
+
+    for (let i = 0; i < STEP_COUNT; i++) {
+        const stepY = (i + 0.5) * stepH;
+        const stepW = isXAxis ? stepD : CELL;
+        const stepL = isXAxis ? CELL : stepD;
+        const stepGeo = new THREE.BoxGeometry(stepW, stepH, stepL);
+        const step = new THREE.Mesh(stepGeo, mat);
+
+        let sx = wx, sz = wz;
+        const offset = (i - (STEP_COUNT - 1) / 2) * stepD;
+        if (isXAxis) {
+            sx = wx + (invertDir ? -offset : offset);
+        } else {
+            sz = wz + (invertDir ? -offset : offset);
+        }
+        step.position.set(sx, stepY, sz);
+        scene.add(step);
+        levelMeshes.push(step);
+    }
+}
+
+function buildRailings(gx, gz, fh, wx, wz, railMat) {
+    const dirs = [
+        { dx: 0, dz: -1, rx: wx, rz: wz - CELL / 2, sx: CELL, sz: 0.1 }, // north
+        { dx: 0, dz: 1, rx: wx, rz: wz + CELL / 2, sx: CELL, sz: 0.1 },  // south
+        { dx: -1, dz: 0, rx: wx - CELL / 2, rz: wz, sx: 0.1, sz: CELL }, // west
+        { dx: 1, dz: 0, rx: wx + CELL / 2, rz: wz, sx: 0.1, sz: CELL },  // east
+    ];
+
+    for (const d of dirs) {
+        const nx = gx + d.dx, nz = gz + d.dz;
+        if (nx < 0 || nx >= MAP_SIZE || nz < 0 || nz >= MAP_SIZE) continue;
+        const nIdx = nz * MAP_SIZE + nx;
+        const nfh = levelFloorH[nIdx];
+        const nw = levelWalls[nIdx];
+
+        // Add railing if neighbor is significantly lower and isn't a wall
+        if (nw <= 0 && nfh < fh - 1.0) {
+            const railGeo = new THREE.BoxGeometry(d.sx, RAILING_H, d.sz);
+            const rail = new THREE.Mesh(railGeo, railMat);
+            rail.position.set(d.rx, fh + RAILING_H / 2, d.rz);
+            scene.add(rail);
+            levelMeshes.push(rail);
+        }
+    }
+}
+
+function buildFloorEdgeWalls(gx, gz, fh, wx, wz, floorMat, floor2Mat) {
+    // Add vertical faces where floor height changes abruptly (ledge edges)
+    const dirs = [
+        { dx: 0, dz: -1, rx: wx, rz: wz - CELL / 2, sx: CELL, sz: 0.05 },
+        { dx: 0, dz: 1, rx: wx, rz: wz + CELL / 2, sx: CELL, sz: 0.05 },
+        { dx: -1, dz: 0, rx: wx - CELL / 2, rz: wz, sx: 0.05, sz: CELL },
+        { dx: 1, dz: 0, rx: wx + CELL / 2, rz: wz, sx: 0.05, sz: CELL },
+    ];
+
+    for (const d of dirs) {
+        const nx = gx + d.dx, nz = gz + d.dz;
+        if (nx < 0 || nx >= MAP_SIZE || nz < 0 || nz >= MAP_SIZE) continue;
+        const nIdx = nz * MAP_SIZE + nx;
+        const nw = levelWalls[nIdx];
+        if (nw > 0) continue; // wall there, no edge needed
+        const nfh = levelFloorH[nIdx];
+        const diff = fh - nfh;
+
+        if (diff > 0.2) {
+            // Build a vertical face to show the ledge
+            const edgeGeo = new THREE.BoxGeometry(d.sx, diff, d.sz);
+            const edge = new THREE.Mesh(edgeGeo, fh >= FLOOR_1_Y - 0.3 ? floor2Mat : floorMat);
+            edge.position.set(d.rx, nfh + diff / 2, d.rz);
+            scene.add(edge);
+            levelMeshes.push(edge);
+        }
+    }
 }
 
 function loadLevel(levelIdx) {
@@ -567,40 +742,92 @@ function loadLevel(levelIdx) {
 
     levelWalls = lvl.walls.slice(); // copy
 
+    // Initialize multi-story data
+    if (lvl.floorHeights) {
+        levelIsMultiStory = true;
+        levelFloorH = new Float32Array(lvl.floorHeights);
+        levelUpperWalls = lvl.upperWalls ? new Uint8Array(lvl.upperWalls) : new Uint8Array(MAP_SIZE * MAP_SIZE);
+        levelCeilingH = lvl.ceilingHeights ? new Float32Array(lvl.ceilingHeights) : (() => {
+            const arr = new Float32Array(MAP_SIZE * MAP_SIZE);
+            arr.fill(WALL_H);
+            return arr;
+        })();
+    }
+
     // Ceiling/floor colors from level data
     const ceilColor = lvl.ceiling ? ((lvl.ceiling[0] << 16) | (lvl.ceiling[1] << 8) | lvl.ceiling[2]) : 0x383838;
     const floorColor = lvl.floor ? ((lvl.floor[0] << 16) | (lvl.floor[1] << 8) | lvl.floor[2]) : 0x707070;
     scene.background = new THREE.Color(ceilColor || 0x383838);
 
-    // Floor plane
-    const floorGeo = new THREE.PlaneGeometry(MAP_SIZE * CELL, MAP_SIZE * CELL);
-    const floorMat = new THREE.MeshBasicMaterial({ color: floorColor || 0x707070 });
-    const floor = new THREE.Mesh(floorGeo, floorMat);
-    floor.rotation.x = -Math.PI / 2;
-    floor.position.set(MAP_SIZE * CELL / 2, 0, MAP_SIZE * CELL / 2);
-    scene.add(floor);
-    levelMeshes.push(floor);
+    if (levelIsMultiStory) {
+        // ─── Multi-story floor/ceiling geometry ───
+        buildMultiStoryGeometry(floorColor, ceilColor);
+    } else {
+        // ─── Standard single-story floor/ceiling ───
+        // Floor plane
+        const floorGeo = new THREE.PlaneGeometry(MAP_SIZE * CELL, MAP_SIZE * CELL);
+        const floorMat = new THREE.MeshBasicMaterial({ color: floorColor || 0x707070 });
+        const floor = new THREE.Mesh(floorGeo, floorMat);
+        floor.rotation.x = -Math.PI / 2;
+        floor.position.set(MAP_SIZE * CELL / 2, 0, MAP_SIZE * CELL / 2);
+        scene.add(floor);
+        levelMeshes.push(floor);
 
-    // Ceiling plane
-    const ceilGeo = new THREE.PlaneGeometry(MAP_SIZE * CELL, MAP_SIZE * CELL);
-    const ceilMat = new THREE.MeshBasicMaterial({ color: ceilColor || 0x383838 });
-    const ceil = new THREE.Mesh(ceilGeo, ceilMat);
-    ceil.rotation.x = Math.PI / 2;
-    ceil.position.set(MAP_SIZE * CELL / 2, WALL_H, MAP_SIZE * CELL / 2);
-    scene.add(ceil);
-    levelMeshes.push(ceil);
+        // Ceiling plane
+        const ceilGeo = new THREE.PlaneGeometry(MAP_SIZE * CELL, MAP_SIZE * CELL);
+        const ceilMat = new THREE.MeshBasicMaterial({ color: ceilColor || 0x383838 });
+        const ceil = new THREE.Mesh(ceilGeo, ceilMat);
+        ceil.rotation.x = Math.PI / 2;
+        ceil.position.set(MAP_SIZE * CELL / 2, WALL_H, MAP_SIZE * CELL / 2);
+        scene.add(ceil);
+        levelMeshes.push(ceil);
+    }
 
     // Build walls
+    const wallGeoCache = {};
     for (let y = 0; y < MAP_SIZE; y++) {
         for (let x = 0; x < MAP_SIZE; x++) {
             const w = levelWalls[y * MAP_SIZE + x];
             if (w > 0) {
-                // Solid wall
-                const mats = getWallMaterials(w);
-                const mesh = new THREE.Mesh(wallGeo, mats);
-                mesh.position.set(x * CELL + CELL / 2, WALL_H / 2, y * CELL + CELL / 2);
-                scene.add(mesh);
-                levelMeshes.push(mesh);
+                if (levelIsMultiStory) {
+                    // Variable-height wall for multi-story
+                    const fh = levelFloorH[y * MAP_SIZE + x];
+                    const ch = levelCeilingH[y * MAP_SIZE + x];
+                    const wallHeight = ch - fh;
+                    if (wallHeight <= 0) continue;
+                    const key = wallHeight.toFixed(2);
+                    if (!wallGeoCache[key]) {
+                        wallGeoCache[key] = new THREE.BoxGeometry(CELL, wallHeight, CELL);
+                    }
+                    const mats = getWallMaterials(w);
+                    const mesh = new THREE.Mesh(wallGeoCache[key], mats);
+                    mesh.position.set(x * CELL + CELL / 2, fh + wallHeight / 2, y * CELL + CELL / 2);
+                    scene.add(mesh);
+                    levelMeshes.push(mesh);
+                } else {
+                    // Standard wall
+                    const mats = getWallMaterials(w);
+                    const mesh = new THREE.Mesh(wallGeo, mats);
+                    mesh.position.set(x * CELL + CELL / 2, WALL_H / 2, y * CELL + CELL / 2);
+                    scene.add(mesh);
+                    levelMeshes.push(mesh);
+                }
+            }
+        }
+    }
+
+    // Build upper walls (second story walls)
+    if (levelIsMultiStory && levelUpperWalls) {
+        for (let y = 0; y < MAP_SIZE; y++) {
+            for (let x = 0; x < MAP_SIZE; x++) {
+                const uw = levelUpperWalls[y * MAP_SIZE + x];
+                if (uw > 0) {
+                    const mats = getWallMaterials(uw);
+                    const mesh = new THREE.Mesh(wallGeo, mats);
+                    mesh.position.set(x * CELL + CELL / 2, FLOOR_1_Y + WALL_H / 2, y * CELL + CELL / 2);
+                    scene.add(mesh);
+                    levelMeshes.push(mesh);
+                }
             }
         }
     }
@@ -623,8 +850,9 @@ function loadLevel(levelIdx) {
             mats = mats.horiz;
         }
 
+        const doorFloorH = levelIsMultiStory ? getFloorHeight(wx, wz) : 0;
         const doorMesh = new THREE.Mesh(geo, mats);
-        doorMesh.position.set(wx, WALL_H / 2, wz);
+        doorMesh.position.set(wx, doorFloorH + WALL_H / 2, wz);
         doorMesh.userData = {
             isDoor: true,
             doorType: d.type,
@@ -632,6 +860,7 @@ function loadLevel(levelIdx) {
             gridX: d.x, gridY: d.y,
             openAmount: 0, opening: false, open: false,
             closing: false, closeTimer: 0,
+            floorY: doorFloorH,
         };
         scene.add(doorMesh);
         levelMeshes.push(doorMesh);
@@ -659,6 +888,7 @@ function loadLevel(levelIdx) {
 
         const wx = s.x * CELL + CELL / 2;
         const wz = s.y * CELL + CELL / 2;
+        const staticFloorY = levelIsMultiStory ? getFloorHeight(wx, wz) : 0;
 
         if (typeIdx === 14 || typeIdx === 4) {
             addCeilingLamp(wx, wz, typeIdx === 4);
@@ -677,7 +907,7 @@ function loadLevel(levelIdx) {
             const sp = new THREE.Sprite(mat);
             const pickupScale = getPickupScale(info.pickup);
             sp.center.set(0.5, 0);
-            sp.position.set(wx, 0.02, wz);
+            sp.position.set(wx, staticFloorY + 0.02, wz);
             sp.scale.set(pickupScale, pickupScale, 1);
             sp.userData = { isPickup: true, pickupType: info.pickup, sourceStatType: typeIdx, collected: false };
             scene.add(sp);
@@ -688,7 +918,7 @@ function loadLevel(levelIdx) {
             const mat = new THREE.SpriteMaterial({ map: spriteTile(tx, ty), transparent: true, alphaTest: 0.5 });
             const sp = new THREE.Sprite(mat);
             sp.center.set(0.5, 0);
-            sp.position.set(wx, 0.02, wz);
+            sp.position.set(wx, staticFloorY + 0.02, wz);
             sp.scale.set(1.0, 1.2, 1);
             sp.userData = { blocking: info.block };
             scene.add(sp);
@@ -717,12 +947,13 @@ function loadLevel(levelIdx) {
         };
         const wx = e.x * CELL + CELL / 2;
         const wz = e.y * CELL + CELL / 2;
+        const enemyFloorH = levelIsMultiStory ? getFloorHeight(wx, wz) : 0;
 
         const initialMap = e.type === 'dog' ? dogWalkFrames[0] : guardTile(0, 0);
         const mat = new THREE.SpriteMaterial({ map: initialMap, transparent: true, alphaTest: 0.5 });
         if (typeDef.tint) mat.color.copy(typeDef.tint);
         const sp = new THREE.Sprite(mat);
-        sp.position.set(wx, typeDef.scale[1] / 2, wz);
+        sp.position.set(wx, enemyFloorH + typeDef.scale[1] / 2, wz);
         sp.scale.set(typeDef.scale[0], typeDef.scale[1], 1);
         sp.userData = {
             isEnemy: true, alive: true,
@@ -747,18 +978,19 @@ function loadLevel(levelIdx) {
             dodgeTimer: 0, dodgeDir: 1,
             // Door wait state
             doorWaitTimer: 0, doorWaitX: 0, doorWaitZ: 0,
+            // Multi-story: enemy's floor Y
+            currentFloorY: enemyFloorH,
         };
         scene.add(sp);
         levelEnemies.push(sp);
     }
 
     // Player spawn
-    camera.position.set(
-        lvl.spawnX * CELL + CELL / 2,
-        EYE_H,
-        lvl.spawnY * CELL + CELL / 2
-    );
-    playerY = EYE_H;
+    const spawnWX = lvl.spawnX * CELL + CELL / 2;
+    const spawnWZ = lvl.spawnY * CELL + CELL / 2;
+    const spawnFloorH = levelIsMultiStory ? getFloorHeight(spawnWX, spawnWZ) : 0;
+    camera.position.set(spawnWX, spawnFloorH + EYE_H, spawnWZ);
+    playerY = spawnFloorH + EYE_H;
     playerVelY = 0;
     // Spawn angle: 0=east, 90=north, 180=west, 270=south (original Wolf3D)
     // In our system: yaw=0 faces -Z (north), yaw=-PI/2 faces +X (east)
@@ -777,6 +1009,11 @@ function loadLevel(levelIdx) {
 // ─── Collision ──────────────────────────────────
 
 function isBlocked(wx, wz) {
+    // For multi-story levels, delegate to multi-story version using player's current floor height
+    if (levelIsMultiStory) {
+        const playerFloorH = getFloorHeight(camera.position.x, camera.position.z);
+        return isBlockedMultiStory(wx, wz, playerFloorH);
+    }
     const gx = Math.floor(wx / CELL);
     const gz = Math.floor(wz / CELL);
     if (gx < 0 || gx >= MAP_SIZE || gz < 0 || gz >= MAP_SIZE) return true;
@@ -809,6 +1046,144 @@ function getDoorAt(gx, gz) {
     if (gx < 0 || gx >= MAP_SIZE || gz < 0 || gz >= MAP_SIZE) return null;
     if (levelWalls[gz * MAP_SIZE + gx] !== -1) return null;
     return levelDoors.find(d => d.userData.gridX === gx && d.userData.gridY === gz) || null;
+}
+
+// ─── Multi-Story Height Functions ───────────────
+function getFloorHeight(wx, wz) {
+    if (!levelIsMultiStory || !levelFloorH) return 0;
+    const gx = Math.floor(wx / CELL);
+    const gz = Math.floor(wz / CELL);
+    if (gx < 0 || gx >= MAP_SIZE || gz < 0 || gz >= MAP_SIZE) return 0;
+    return levelFloorH[gz * MAP_SIZE + gx];
+}
+
+function getCeilingHeight(wx, wz) {
+    if (!levelIsMultiStory || !levelCeilingH) return WALL_H;
+    const gx = Math.floor(wx / CELL);
+    const gz = Math.floor(wz / CELL);
+    if (gx < 0 || gx >= MAP_SIZE || gz < 0 || gz >= MAP_SIZE) return WALL_H;
+    return levelCeilingH[gz * MAP_SIZE + gx];
+}
+
+function getFloorHeightSmooth(wx, wz) {
+    if (!levelIsMultiStory || !levelFloorH) return 0;
+    // Bilinear interpolation for smooth stair climbing
+    const fx = wx / CELL - 0.5;
+    const fz = wz / CELL - 0.5;
+    const gx0 = Math.floor(fx), gz0 = Math.floor(fz);
+    const gx1 = gx0 + 1, gz1 = gz0 + 1;
+    const tx = fx - gx0, tz = fz - gz0;
+
+    const h = (gx, gz) => {
+        const cx = Math.max(0, Math.min(MAP_SIZE - 1, gx));
+        const cz = Math.max(0, Math.min(MAP_SIZE - 1, gz));
+        return levelFloorH[cz * MAP_SIZE + cx];
+    };
+
+    const h00 = h(gx0, gz0), h10 = h(gx1, gz0);
+    const h01 = h(gx0, gz1), h11 = h(gx1, gz1);
+    return (h00 * (1 - tx) * (1 - tz) + h10 * tx * (1 - tz) +
+            h01 * (1 - tx) * tz + h11 * tx * tz);
+}
+
+// Check if position is on second floor
+function isOnSecondFloor(floorY) {
+    return floorY >= FLOOR_1_Y - 0.3;
+}
+
+// Multi-story aware blocked check
+function isBlockedMultiStory(wx, wz, entityFloorY) {
+    const gx = Math.floor(wx / CELL);
+    const gz = Math.floor(wz / CELL);
+    if (gx < 0 || gx >= MAP_SIZE || gz < 0 || gz >= MAP_SIZE) return true;
+    const w = levelWalls[gz * MAP_SIZE + gx];
+
+    if (w > 0) {
+        // Ground-floor wall: if entity on second floor, short walls don't block
+        if (levelIsMultiStory && isOnSecondFloor(entityFloorY)) {
+            // Check if wall reaches up to second floor (ceiling of this cell)
+            const cellCeil = levelCeilingH ? levelCeilingH[gz * MAP_SIZE + gx] : WALL_H;
+            if (cellCeil <= FLOOR_1_Y) return false; // short wall, entity walks above it
+        }
+        return true;
+    }
+    if (w === -1) {
+        const door = levelDoors.find(d => d.userData.gridX === gx && d.userData.gridY === gz);
+        if (door && door.userData.openAmount >= DOOR_PASSABLE_OPEN) return false;
+        return true;
+    }
+
+    // Check upper walls when entity is on second floor
+    if (levelIsMultiStory && isOnSecondFloor(entityFloorY) && levelUpperWalls) {
+        const uw = levelUpperWalls[gz * MAP_SIZE + gx];
+        if (uw > 0) return true;
+    }
+
+    // Step-up check: can't walk onto platform that's too high above current floor
+    if (levelIsMultiStory && levelFloorH) {
+        const targetFloor = levelFloorH[gz * MAP_SIZE + gx];
+        const stepUp = targetFloor - entityFloorY;
+        if (stepUp > MAX_STEP_UP) return true; // too high to step up
+    }
+
+    // Check static objects
+    for (const s of levelStatics) {
+        if (s.userData.blocking) {
+            const sdx = wx - s.position.x, sdz = wz - s.position.z;
+            if (sdx * sdx + sdz * sdz < 0.36) return true;
+        }
+    }
+    return false;
+}
+
+// Multi-story line of sight (considers Y difference)
+function hasLineOfSightMultiStory(x1, z1, y1, x2, z2, y2) {
+    // If height difference is too large, no LOS between floors
+    if (Math.abs(y1 - y2) > STORY_H * 0.6) return false;
+
+    const bothSecondFloor = isOnSecondFloor(y1) && isOnSecondFloor(y2);
+    if (!bothSecondFloor) return hasLineOfSight(x1, z1, x2, z2);
+
+    // Second-floor LOS must ignore short ground-floor walls and consider upperWalls/upper doors.
+    const dx = x2 - x1, dz = z2 - z1;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    if (dist < 0.1) return true;
+
+    const stepSize = 0.4;
+    const steps = Math.max(2, Math.ceil(dist / stepSize));
+    const startGX = Math.floor(x1 / CELL), startGZ = Math.floor(z1 / CELL);
+    const endGX = Math.floor(x2 / CELL), endGZ = Math.floor(z2 / CELL);
+
+    for (let i = 1; i < steps; i++) {
+        const t = i / steps;
+        const cx = x1 + dx * t, cz = z1 + dz * t;
+        const gx = Math.floor(cx / CELL), gz = Math.floor(cz / CELL);
+
+        if (gx === startGX && gz === startGZ) continue;
+        if (gx === endGX && gz === endGZ) continue;
+        if (gx < 0 || gx >= MAP_SIZE || gz < 0 || gz >= MAP_SIZE) return false;
+
+        const idx = gz * MAP_SIZE + gx;
+
+        // Upper-story walls always block second-floor LOS.
+        if (levelUpperWalls && levelUpperWalls[idx] > 0) return false;
+
+        const w = levelWalls[idx];
+        if (w > 0) {
+            // Ground-wall blocks second floor only if it extends above the 2nd floor height.
+            const cellCeil = levelCeilingH ? levelCeilingH[idx] : WALL_H;
+            if (cellCeil > FLOOR_1_Y) return false;
+        } else if (w === -1) {
+            // Doors only block second-floor LOS if the door exists on the second floor.
+            const door = levelDoors.find(d => d.userData.gridX === gx && d.userData.gridY === gz);
+            if (!door) return false;
+            if (isOnSecondFloor(door.userData.floorY || 0)) {
+                if (door.userData.openAmount < DOOR_PASSABLE_OPEN) return false;
+            }
+        }
+    }
+
+    return true;
 }
 
 function hasLineOfSight(x1, z1, x2, z2) {
@@ -866,7 +1241,11 @@ function setEnemyDeathFrame(e, frameIdx) {
     const pose = poses[Math.min(idx, poses.length - 1)];
     setEnemyTexture(e, frames[idx]);
     e.scale.set(e.userData.baseScaleX * pose.sx, e.userData.baseScaleY * pose.sy, 1);
-    e.position.y = e.userData.baseScaleY * pose.y;
+    // Multi-story: keep corpse on the correct floor (otherwise 2nd-floor deaths appear to "vanish").
+    const floorY = levelIsMultiStory
+        ? (e.userData.currentFloorY ?? getFloorHeight(e.position.x, e.position.z))
+        : 0;
+    e.position.y = floorY + e.userData.baseScaleY * pose.y;
 }
 
 function startEnemyAttack(e) {
@@ -933,9 +1312,14 @@ function enemyFireAtPlayer(e, dist) {
     // Separate additive flash sprite removed to avoid extra glow.
     // Shooting flash is shown directly in guardShootFireTex.
 
+    const eLos = levelIsMultiStory
+        ? hasLineOfSightMultiStory(e.position.x, e.position.z, e.userData.currentFloorY || 0,
+            camera.position.x, camera.position.z, getFloorHeight(camera.position.x, camera.position.z))
+        : hasLineOfSight(e.position.x, e.position.z, camera.position.x, camera.position.z);
+
     if (td.melee) {
         if (dist >= 1.35) return;
-        if (!hasLineOfSight(e.position.x, e.position.z, camera.position.x, camera.position.z)) return;
+        if (!eLos) return;
         if (Math.floor(Math.random() * 256) >= 180) return;
         const rawDamage = Math.floor(Math.random() * 256) >> 4;
         const dmg = Math.max(td.dmg[0], Math.min(td.dmg[1], rawDamage));
@@ -944,7 +1328,7 @@ function enemyFireAtPlayer(e, dist) {
     }
 
     if (dist >= td.shootDist) return;
-    if (!hasLineOfSight(e.position.x, e.position.z, camera.position.x, camera.position.z)) return;
+    if (!eLos) return;
     enemyAttemptHitPlayer(e, dist);
 }
 
@@ -1067,6 +1451,12 @@ function alertEnemiesBySound(sourceX, sourceZ, radius) {
         const egx = Math.floor(e.position.x / CELL);
         const egz = Math.floor(e.position.z / CELL);
         if (alertedCells.has(egx * MAP_SIZE + egz)) {
+            // Multi-story: don't alert enemies on different floors
+            if (levelIsMultiStory) {
+                const sourceFloor = getFloorHeight(sourceX, sourceZ);
+                const enemyFloor = e.userData.currentFloorY || 0;
+                if (Math.abs(sourceFloor - enemyFloor) > STORY_H * 0.5) continue;
+            }
             // Bug G fix: Don't downgrade enemies already chasing/attacking/dodging
             const ai = e.userData.aiState;
             if (ai === AI.CHASE || ai === AI.ATTACK || ai === AI.DODGE || ai === AI.PAIN) continue;
@@ -1193,7 +1583,11 @@ function shoot() {
         if (d > 25 || d >= closestDist) continue;
         const dir = new THREE.Vector3().subVectors(e.position, camera.position).normalize();
         const dotThreshold = Math.max(0.92, 0.98 - (1 / (d + 1)) * 0.1);
-        if (dir.dot(camDir) > dotThreshold && hasLineOfSight(camera.position.x, camera.position.z, e.position.x, e.position.z)) {
+        const losOk = levelIsMultiStory
+            ? hasLineOfSightMultiStory(camera.position.x, camera.position.z, getFloorHeight(camera.position.x, camera.position.z),
+                e.position.x, e.position.z, e.userData.currentFloorY || 0)
+            : hasLineOfSight(camera.position.x, camera.position.z, e.position.x, e.position.z);
+        if (dir.dot(camDir) > dotThreshold && losOk) {
             closestDist = d;
             closestHit = e;
         }
@@ -1265,7 +1659,8 @@ function killEnemy(e) {
         const mat = new THREE.SpriteMaterial({ map: spriteTile(clipCol, clipRow), transparent: true, alphaTest: 0.5 });
         const pickup = new THREE.Sprite(mat);
         pickup.center.set(0.5, 0);
-        pickup.position.set(e.position.x, 0.02, e.position.z);
+        const dropFloorY = (e.userData.currentFloorY || 0) + 0.02;
+        pickup.position.set(e.position.x, dropFloorY, e.position.z);
         pickup.scale.set(0.66, 0.66, 1);
         pickup.userData = { isPickup: true, pickupType: 'ammo', sourceStatType: 26, collected: false };
         scene.add(pickup);
@@ -1368,9 +1763,16 @@ function moveEnemyToward(e, targetX, targetZ, dt) {
     const nx = e.position.x + dirX * speed;
     const nz = e.position.z + dirZ * speed;
 
+    // Use multi-story collision for enemies on multi-story levels
+    const eBlocked = levelIsMultiStory
+        ? (wx, wz) => isBlockedMultiStory(wx, wz, e.userData.currentFloorY || 0)
+        : (wx, wz) => isBlocked(wx, wz);
+
     // Try direct movement
-    if (!isBlocked(nx, nz)) {
+    if (!eBlocked(nx, nz)) {
         e.position.x = nx; e.position.z = nz;
+        // Update enemy Y on multi-story levels
+        if (levelIsMultiStory) updateEnemyY(e);
         return false;
     }
 
@@ -1382,8 +1784,16 @@ function moveEnemyToward(e, targetX, targetZ, dt) {
     }
 
     // Try axis-sliding
-    if (!isBlocked(nx, e.position.z)) { e.position.x = nx; return false; }
-    if (!isBlocked(e.position.x, nz)) { e.position.z = nz; return false; }
+    if (!eBlocked(nx, e.position.z)) {
+        e.position.x = nx;
+        if (levelIsMultiStory) updateEnemyY(e);
+        return false;
+    }
+    if (!eBlocked(e.position.x, nz)) {
+        e.position.z = nz;
+        if (levelIsMultiStory) updateEnemyY(e);
+        return false;
+    }
 
     // Fully blocked — use A* pathfinding
     const path = findPath(e.position.x, e.position.z, targetX, targetZ);
@@ -1403,18 +1813,30 @@ function moveEnemyToward(e, targetX, targetZ, dt) {
         if (pDist > 0.1) {
             const pmx = e.position.x + (pdx / pDist) * speed;
             const pmz = e.position.z + (pdz / pDist) * speed;
-            if (!isBlocked(pmx, pmz)) { e.position.x = pmx; e.position.z = pmz; }
-            else if (!isBlocked(pmx, e.position.z)) { e.position.x = pmx; }
-            else if (!isBlocked(e.position.x, pmz)) { e.position.z = pmz; }
+            if (!eBlocked(pmx, pmz)) { e.position.x = pmx; e.position.z = pmz; }
+            else if (!eBlocked(pmx, e.position.z)) { e.position.x = pmx; }
+            else if (!eBlocked(e.position.x, pmz)) { e.position.z = pmz; }
         }
+        if (levelIsMultiStory) updateEnemyY(e);
     } else {
         // Bug F fix: Fallback when A* returns no path — try random perpendicular movement
         const perpAngle = Math.atan2(dirX, dirZ) + (Math.random() < 0.5 ? Math.PI / 2 : -Math.PI / 2);
         const fx = e.position.x + Math.sin(perpAngle) * speed;
         const fz = e.position.z + Math.cos(perpAngle) * speed;
-        if (!isBlocked(fx, fz)) { e.position.x = fx; e.position.z = fz; }
+        if (!eBlocked(fx, fz)) {
+            e.position.x = fx; e.position.z = fz;
+            if (levelIsMultiStory) updateEnemyY(e);
+        }
     }
     return false;
+}
+
+// Update enemy Y position for multi-story levels
+function updateEnemyY(e) {
+    if (!levelIsMultiStory) return;
+    const fh = getFloorHeight(e.position.x, e.position.z);
+    e.userData.currentFloorY = fh;
+    e.position.y = fh + e.userData.baseScaleY / 2;
 }
 
 function updateEnemies(dt) {
@@ -1453,7 +1875,10 @@ function updateEnemies(dt) {
         const prevX = e.position.x, prevZ = e.position.z;
 
         // ── Check for player visibility (shared across states) ──
-        const canSee = dist < td.alertDist && hasLineOfSight(e.position.x, e.position.z, camera.position.x, camera.position.z);
+        const canSee = dist < td.alertDist && (levelIsMultiStory
+            ? hasLineOfSightMultiStory(e.position.x, e.position.z, e.userData.currentFloorY || 0,
+                camera.position.x, camera.position.z, getFloorHeight(camera.position.x, camera.position.z))
+            : hasLineOfSight(e.position.x, e.position.z, camera.position.x, camera.position.z));
 
         switch (e.userData.aiState) {
 
@@ -1487,7 +1912,13 @@ function updateEnemies(dt) {
                 const speed = td.speed * 0.4 * dt;
                 const nx = e.position.x + Math.sin(e.userData.patrolAngle) * speed;
                 const nz = e.position.z + Math.cos(e.userData.patrolAngle) * speed;
-                if (!isBlocked(nx, nz)) { e.position.x = nx; e.position.z = nz; }
+                const eBlocked = levelIsMultiStory
+                    ? (wx, wz) => isBlockedMultiStory(wx, wz, e.userData.currentFloorY || 0)
+                    : (wx, wz) => isBlocked(wx, wz);
+                if (!eBlocked(nx, nz)) {
+                    e.position.x = nx; e.position.z = nz;
+                    if (levelIsMultiStory) updateEnemyY(e);
+                }
                 else { e.userData.patrolAngle += Math.PI * 0.5 + Math.random() * Math.PI; }
                 e.userData.patrolTimer -= dt;
                 if (e.userData.patrolTimer <= 0) {
@@ -1605,7 +2036,13 @@ function updateEnemies(dt) {
                 const speed = td.speed * 0.8 * dt;
                 const nx = e.position.x + perpX * speed;
                 const nz = e.position.z + perpZ * speed;
-                if (!isBlocked(nx, nz)) { e.position.x = nx; e.position.z = nz; }
+                const eBlocked = levelIsMultiStory
+                    ? (wx, wz) => isBlockedMultiStory(wx, wz, e.userData.currentFloorY || 0)
+                    : (wx, wz) => isBlocked(wx, wz);
+                if (!eBlocked(nx, nz)) {
+                    e.position.x = nx; e.position.z = nz;
+                    if (levelIsMultiStory) updateEnemyY(e);
+                }
                 else { e.userData.dodgeDir *= -1; } // reverse direction if hit wall
 
                 e.userData.dodgeTimer -= dt;
@@ -1698,6 +2135,12 @@ function checkPickups() {
         const pdx = camera.position.x - p.position.x;
         const pdz = camera.position.z - p.position.z;
         if (pdx * pdx + pdz * pdz >= PICKUP_RADIUS * PICKUP_RADIUS) continue;
+        // Multi-story: skip pickups on different floor
+        if (levelIsMultiStory) {
+            const playerFloor = getFloorHeight(camera.position.x, camera.position.z);
+            const pickupFloor = getFloorHeight(p.position.x, p.position.z);
+            if (Math.abs(playerFloor - pickupFloor) > 1.0) continue;
+        }
 
         const t = p.userData.pickupType;
         let picked = false;
@@ -2110,6 +2553,7 @@ const EPISODES = [
     { name: 'Escape from Wolfenstein', startLevel: 0 },
     { name: 'Operation: Eisenfaust',   startLevel: 10 },
     { name: 'Die, Fuhrer, Die!',       startLevel: 20 },
+    { name: 'Multi-Story Test',        startLevel: 30 },
 ];
 
 // BJ face frame indices for difficulty screen (healthRow * 3 + 1 for center face)
@@ -2772,7 +3216,10 @@ document.addEventListener('keydown', e => {
     if (e.code === 'Space') {
         e.preventDefault();
         if (!pointerLocked || gameOver) return;
-        if (!e.repeat && playerY <= EYE_H + 0.001 && playerVelY === 0) {
+        const jumpGroundH = levelIsMultiStory
+            ? getFloorHeightSmooth(camera.position.x, camera.position.z) + EYE_H
+            : EYE_H;
+        if (!e.repeat && playerY <= jumpGroundH + 0.05 && playerVelY <= 0) {
             playerVelY = JUMP_VELOCITY;
         }
     }
@@ -2821,6 +3268,8 @@ function drawMinimap() {
     const viewR = 16; // cells visible in each direction
     const mmS = 200 / (viewR * 2);
 
+    const playerFloor = levelIsMultiStory ? getFloorHeight(camera.position.x, camera.position.z) : 0;
+
     for (let dy = -viewR; dy < viewR; dy++) {
         for (let dx = -viewR; dx < viewR; dx++) {
             const gx = Math.floor(pgx) + dx;
@@ -2829,9 +3278,32 @@ function drawMinimap() {
             const w = levelWalls[gz * MAP_SIZE + gx];
             const sx = (dx + viewR) * mmS;
             const sy = (dy + viewR) * mmS;
-            if (w > 0) mCtx.fillStyle = '#777';
-            else if (w === -1) mCtx.fillStyle = '#5AA';
-            else mCtx.fillStyle = '#333';
+
+            if (levelIsMultiStory) {
+                const idx = gz * MAP_SIZE + gx;
+                const cellFloor = levelFloorH[idx];
+                const cellDimFactor = Math.abs(cellFloor - playerFloor) > 1.0 ? 0.4 : 1.0;
+                const uw = levelUpperWalls ? levelUpperWalls[idx] : 0;
+                const isStair = cellFloor > 0.1 && cellFloor < FLOOR_1_Y - 0.3;
+
+                if (w > 0) {
+                    const c = Math.round(0x77 * cellDimFactor);
+                    mCtx.fillStyle = `rgb(${c},${c},${c})`;
+                } else if (w === -1) {
+                    mCtx.fillStyle = cellDimFactor < 1 ? '#2a5555' : '#5AA';
+                } else if (isStair) {
+                    mCtx.fillStyle = cellDimFactor < 1 ? '#443' : '#665';
+                } else if (uw > 0 && isOnSecondFloor(playerFloor)) {
+                    mCtx.fillStyle = '#997';
+                } else {
+                    const c = Math.round(0x33 * cellDimFactor + 0x11);
+                    mCtx.fillStyle = `rgb(${c},${c},${c})`;
+                }
+            } else {
+                if (w > 0) mCtx.fillStyle = '#777';
+                else if (w === -1) mCtx.fillStyle = '#5AA';
+                else mCtx.fillStyle = '#333';
+            }
             mCtx.fillRect(sx, sy, mmS + 0.5, mmS + 0.5);
         }
     }
@@ -2839,6 +3311,11 @@ function drawMinimap() {
     // Enemies
     for (const e of levelEnemies) {
         if (!e.userData.alive) continue;
+        // Multi-story: dim enemies on different floors
+        if (levelIsMultiStory) {
+            const eFl = e.userData.currentFloorY || 0;
+            if (Math.abs(eFl - playerFloor) > 1.0) continue; // hide enemies on different floor
+        }
         const ex = (e.position.x / CELL - pgx + viewR) * mmS;
         const ez = (e.position.z / CELL - pgz + viewR) * mmS;
         if (ex < 0 || ex > 200 || ez < 0 || ez > 200) continue;
@@ -2919,6 +3396,13 @@ function gameLoop() {
     if (keys['KeyD'] || keys['ArrowRight']) mv.add(right);
 
     let bobPhase = 0;
+    // Edge-fall protection for multi-story: block walking off ledges when not jumping
+    const edgeFallCheck = (wx, wz) => {
+        if (!levelIsMultiStory || playerVelY > 0) return false; // allow if jumping up
+        const curFloor = getFloorHeight(camera.position.x, camera.position.z);
+        const targetFloor = getFloorHeight(wx, wz);
+        return (curFloor - targetFloor) > 1.0; // block if would fall more than 1 unit
+    };
     if (mv.length() > 0) {
         mv.normalize().multiplyScalar(speed);
         const nx = camera.position.x + mv.x, nz = camera.position.z + mv.z;
@@ -2926,24 +3410,52 @@ function gameLoop() {
         // X axis collision
         if (!isBlocked(nx + r, camera.position.z) && !isBlocked(nx - r, camera.position.z) &&
             !isBlocked(nx + r, camera.position.z + r) && !isBlocked(nx - r, camera.position.z - r) &&
-            !isBlocked(nx + r, camera.position.z - r) && !isBlocked(nx - r, camera.position.z + r))
+            !isBlocked(nx + r, camera.position.z - r) && !isBlocked(nx - r, camera.position.z + r) &&
+            !edgeFallCheck(nx, camera.position.z))
             camera.position.x = nx;
         // Z axis collision
         if (!isBlocked(camera.position.x, nz + r) && !isBlocked(camera.position.x, nz - r) &&
             !isBlocked(camera.position.x + r, nz + r) && !isBlocked(camera.position.x - r, nz - r) &&
-            !isBlocked(camera.position.x + r, nz - r) && !isBlocked(camera.position.x - r, nz + r))
+            !isBlocked(camera.position.x + r, nz - r) && !isBlocked(camera.position.x - r, nz + r) &&
+            !edgeFallCheck(camera.position.x, nz))
             camera.position.z = nz;
     }
 
     // Jump/gravity physics (space to jump)
     playerVelY -= PLAYER_GRAVITY * dt;
     playerY += playerVelY * dt;
-    if (playerY <= EYE_H) {
-        playerY = EYE_H;
-        if (playerVelY < 0) playerVelY = 0;
+
+    // Dynamic ground height for multi-story levels
+    let groundH;
+    if (levelIsMultiStory) {
+        const smoothFloor = getFloorHeightSmooth(camera.position.x, camera.position.z);
+        groundH = smoothFloor + EYE_H;
+        // Lerp player Y toward ground for smooth stair climbing
+        if (playerVelY <= 0 && playerY <= groundH + 0.05) {
+            playerY = playerY + (groundH - playerY) * Math.min(1, STAIR_LERP_SPEED * dt);
+            if (Math.abs(playerY - groundH) < 0.01) playerY = groundH;
+            if (playerVelY < 0) playerVelY = 0;
+        } else if (playerY <= groundH) {
+            playerY = groundH;
+            if (playerVelY < 0) playerVelY = 0;
+        }
+        // Ceiling bump
+        const ceilH = getCeilingHeight(camera.position.x, camera.position.z);
+        if (playerY > ceilH - 0.1) {
+            playerY = ceilH - 0.1;
+            if (playerVelY > 0) playerVelY = 0;
+        }
+    } else {
+        groundH = EYE_H;
+        if (playerY <= EYE_H) {
+            playerY = EYE_H;
+            if (playerVelY < 0) playerVelY = 0;
+        }
     }
 
-    const onGround = playerY <= EYE_H + 0.0001 && playerVelY === 0;
+    const onGround = levelIsMultiStory
+        ? (playerY <= groundH + 0.01 && playerVelY <= 0)
+        : (playerY <= EYE_H + 0.0001 && playerVelY === 0);
     if (mv.length() > 0 && onGround) {
         bobPhase = Math.sin(clock.elapsedTime * 8);
         placeWeaponSprite(bobPhase * 2, Math.abs(bobPhase) * 4);
@@ -2991,7 +3503,8 @@ function gameLoop() {
             if (d.userData.openAmount <= 0) {
                 d.userData.closing = false;
                 d.userData.openAmount = 0;
-                d.position.set(baseX, WALL_H / 2, baseZ);
+                const doorBaseY = (d.userData.floorY || 0) + WALL_H / 2;
+                d.position.set(baseX, doorBaseY, baseZ);
             }
         }
 
