@@ -322,12 +322,12 @@ const STATINFO = [
 //   rushes: charges straight at player ignoring caution distance (dogs)
 //   canOpenDoors: can open doors during chase
 const ENEMY_TYPES = {
-    guard:   { name:'Guard',   hp:25,  speed:1.5, dmg:[5,10],  score:100,  alertDist:10, shootDist:10, cooldown:[1.5,2.5], acc:0.6,  alertSfx:SFX.guardAlert,   deathSfx:SFX.guardDeath,   atkSfx:SFX.guardAttack,   tint:null, scale:[1.2,1.6], melee:false, silent:false, noPain:false, dodges:false, rushes:false, canOpenDoors:true },
-    officer: { name:'Officer', hp:50,  speed:2.5, dmg:[8,15],  score:400,  alertDist:14, shootDist:12, cooldown:[1.0,1.8], acc:0.75, alertSfx:SFX.officerAlert, deathSfx:SFX.officerDeath, atkSfx:SFX.guardAttack,   tint:new THREE.Color(0.9,0.9,1.2), scale:[1.2,1.6], melee:false, silent:false, noPain:false, dodges:true, rushes:false, canOpenDoors:true },
-    ss:      { name:'SS',      hp:100, speed:2.0, dmg:[10,20], score:500,  alertDist:16, shootDist:14, cooldown:[0.8,1.5], acc:0.8,  alertSfx:SFX.ssAlert,      deathSfx:SFX.ssDeath,      atkSfx:SFX.ssAttack,      tint:new THREE.Color(0.5,0.5,0.5), scale:[1.3,1.7], melee:false, silent:false, noPain:false, dodges:true, rushes:false, canOpenDoors:true },
-    dog:     { name:'Dog',     hp:1,   speed:4.0, dmg:[5,12],  score:200,  alertDist:12, shootDist:2,  cooldown:[0.8,1.2], acc:0.9,  alertSfx:SFX.dogAlert,     deathSfx:SFX.dogDeath,     atkSfx:SFX.knife,         tint:new THREE.Color(0.8,0.6,0.3), scale:[1.0,0.8], melee:true, silent:false, noPain:false, dodges:false, rushes:true, canOpenDoors:false },
-    mutant:  { name:'Mutant',  hp:55,  speed:1.8, dmg:[8,18],  score:700,  alertDist:12, shootDist:10, cooldown:[0.3,0.6], acc:0.7,  alertSfx:SFX.guardAlert,   deathSfx:SFX.mutantDeath,  atkSfx:SFX.guardAttack,   tint:new THREE.Color(0.4,0.8,0.3), scale:[1.3,1.7], melee:false, silent:true, noPain:false, dodges:false, rushes:false, canOpenDoors:true },
-    boss:    { name:'Boss',    hp:850, speed:1.2, dmg:[15,30], score:5000, alertDist:20, shootDist:16, cooldown:[0.5,1.0], acc:0.85, alertSfx:SFX.bossAlert,    deathSfx:SFX.bossDeath,    atkSfx:SFX.bossAttack,    tint:new THREE.Color(1.2,0.8,0.8), scale:[1.8,2.2], melee:false, silent:false, noPain:true, dodges:false, rushes:false, canOpenDoors:true },
+    guard:   { name:'Guard',   hp:25,  speed:2.2, dmg:[5,10],  score:100,  alertDist:13, shootDist:12, cooldown:[0.9,1.5], acc:0.6,  alertSfx:SFX.guardAlert,   deathSfx:SFX.guardDeath,   atkSfx:SFX.guardAttack,   tint:null, scale:[1.55,2.08], melee:false, silent:false, noPain:false, dodges:false, rushes:false, canOpenDoors:true },
+    officer: { name:'Officer', hp:50,  speed:3.4, dmg:[8,15],  score:400,  alertDist:18, shootDist:14, cooldown:[0.6,1.1], acc:0.75, alertSfx:SFX.officerAlert, deathSfx:SFX.officerDeath, atkSfx:SFX.guardAttack,   tint:new THREE.Color(0.9,0.9,1.2), scale:[1.55,2.08], melee:false, silent:false, noPain:false, dodges:true, rushes:false, canOpenDoors:true },
+    ss:      { name:'SS',      hp:100, speed:2.9, dmg:[10,20], score:500,  alertDist:20, shootDist:16, cooldown:[0.45,0.85], acc:0.8,  alertSfx:SFX.ssAlert,      deathSfx:SFX.ssDeath,      atkSfx:SFX.ssAttack,      tint:new THREE.Color(0.5,0.5,0.5), scale:[1.68,2.24], melee:false, silent:false, noPain:false, dodges:true, rushes:false, canOpenDoors:true },
+    dog:     { name:'Dog',     hp:1,   speed:5.2, dmg:[5,12],  score:200,  alertDist:15, shootDist:2.4,cooldown:[0.45,0.8], acc:0.9,  alertSfx:SFX.dogAlert,     deathSfx:SFX.dogDeath,     atkSfx:SFX.knife,         tint:new THREE.Color(0.8,0.6,0.3), scale:[1.30,1.05], melee:true, silent:false, noPain:false, dodges:false, rushes:true, canOpenDoors:false },
+    mutant:  { name:'Mutant',  hp:55,  speed:2.8, dmg:[8,18],  score:700,  alertDist:16, shootDist:12, cooldown:[0.2,0.4], acc:0.7,  alertSfx:SFX.guardAlert,   deathSfx:SFX.mutantDeath,  atkSfx:SFX.guardAttack,   tint:new THREE.Color(0.4,0.8,0.3), scale:[1.68,2.24], melee:false, silent:true, noPain:false, dodges:false, rushes:false, canOpenDoors:true },
+    boss:    { name:'Boss',    hp:850, speed:1.7, dmg:[15,30], score:5000, alertDist:24, shootDist:19, cooldown:[0.3,0.6], acc:0.85, alertSfx:SFX.bossAlert,    deathSfx:SFX.bossDeath,    atkSfx:SFX.bossAttack,    tint:new THREE.Color(1.2,0.8,0.8), scale:[2.30,2.78], melee:false, silent:false, noPain:true, dodges:false, rushes:false, canOpenDoors:true },
 };
 
 const AI = { STAND:0, PATROL:1, ALERT:2, CHASE:3, ATTACK:4, PAIN:5, DYING:6, DEAD:7, DOOR_WAIT:8, DODGE:9, INVESTIGATE:10 };
@@ -337,14 +337,13 @@ const guardFrames = [];
 for (let r = 0; r < 8; r++)
     for (let c = 0; c < 8; c++)
         guardFrames.push(guardTile(c, r));
-// Guard spritesheet layout (8x8 grid, 16px cells):
-// Row 0: Stand 8 dirs | Row 1-4: Walk 4 frames × 8 dirs
-// Row 5: pain/death sequence (col 0..4)
-// Row 6: attack/aim poses (col 0..1)
-// Row 7: alternate standing/aim variants
-const guardShootAimTex = guardTile(0, 6);   // row 6 col 0 — aim/raise gun
-const guardShootFireTex = guardTile(1, 6);  // row 6 col 1 — fire with flash
-const guardPainTex = guardTile(1, 5);       // row 5 col 1 — hit reaction
+// Guard spritesheet layout (8x8 grid, 64px cells):
+// Row 0: stand 8 dirs | Row 1-4: walk 4 frames × 8 dirs
+// Row 5: pain/death sequence (col 0..4), extra side-shoot at col 7
+// Row 6: col 1 = aim, col 2 = fire WITH muzzle flash
+const guardShootAimTex = guardTile(1, 6);   // row 6 col 1 — aim/raise gun
+const guardShootFireTex = guardTile(2, 6);  // row 6 col 2 — fire with muzzle flash
+const guardPainTex = guardTile(0, 5);       // row 5 col 0 — hit/pain reaction
 const guardDeathFrames = [
     guardTile(0, 5),  // frame 0: hit
     guardTile(1, 5),  // frame 1: falling with blood
@@ -352,6 +351,61 @@ const guardDeathFrames = [
     guardTile(3, 5),  // frame 3: down (front)
     guardTile(4, 5),  // frame 4: flat dead
 ];
+// Muzzle flash pool for enemy shooting visual feedback
+const MUZZLE_FLASH_POOL = [];
+const MUZZLE_FLASH_COUNT = 8;
+function createMuzzleFlashSprite() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 32; canvas.height = 32;
+    const ctx = canvas.getContext('2d');
+    // Bright yellow-orange star-shaped muzzle flash
+    const cx = 16, cy = 16;
+    const gradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, 14);
+    gradient.addColorStop(0, 'rgba(255,255,220,1)');
+    gradient.addColorStop(0.2, 'rgba(255,230,100,1)');
+    gradient.addColorStop(0.5, 'rgba(255,160,30,0.9)');
+    gradient.addColorStop(0.8, 'rgba(255,80,0,0.5)');
+    gradient.addColorStop(1, 'rgba(255,40,0,0)');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, 32, 32);
+    // Cross flare for star effect
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = 'rgba(255,255,200,0.6)';
+    ctx.fillRect(6, 13, 20, 6);
+    ctx.fillRect(13, 6, 6, 20);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.needsUpdate = true;
+    const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
+    const sprite = new THREE.Sprite(mat);
+    sprite.visible = false;
+    sprite.userData.timer = 0;
+    scene.add(sprite);
+    return sprite;
+}
+function showMuzzleFlash(wx, wy, wz) {
+    for (const flash of MUZZLE_FLASH_POOL) {
+        if (!flash.visible) {
+            flash.position.set(wx, wy, wz);
+            flash.scale.set(0.6, 0.6, 0.6);
+            flash.visible = true;
+            flash.userData.timer = 0.08; // brief flash duration
+            return;
+        }
+    }
+}
+function updateMuzzleFlashes(dt) {
+    for (const flash of MUZZLE_FLASH_POOL) {
+        if (!flash.visible) continue;
+        flash.userData.timer -= dt;
+        if (flash.userData.timer <= 0) {
+            flash.visible = false;
+        } else {
+            // Quick scale-down for fade effect
+            const t = flash.userData.timer / 0.08;
+            flash.scale.set(0.6 * t + 0.2, 0.6 * t + 0.2, 1);
+        }
+    }
+}
 const guardDeathPose = [
     { sx: 1.0, sy: 0.95, y: 0.48 },
     { sx: 1.05, sy: 0.82, y: 0.42 },
@@ -379,6 +433,11 @@ dirLight.position.set(0, 1, 0);
 scene.add(dirLight);
 const playerLight = new THREE.PointLight(0xffeedd, 0.3, 10);
 scene.add(playerLight);
+
+// Initialize muzzle flash pool
+for (let i = 0; i < MUZZLE_FLASH_COUNT; i++) {
+    MUZZLE_FLASH_POOL.push(createMuzzleFlashSprite());
+}
 
 // ─── Level State ────────────────────────────────
 let levelWalls = null;    // 64x64 wall values
@@ -602,6 +661,7 @@ function loadLevel(levelIdx) {
             patrolAngle: (e.dir || 0) * Math.PI / 2,
             patrolTimer: 2 + Math.random() * 3,
             walkFrame: 0, walkTimer: 0,
+            moveAngle: (e.dir || 0) * Math.PI / 2, moveTimer: 0,
             dir: e.dir || 0,
             baseScaleX: typeDef.scale[0], baseScaleY: typeDef.scale[1],
             // Investigate state
@@ -723,7 +783,7 @@ function setEnemyDeathFrame(e, frameIdx) {
 function startEnemyAttack(e) {
     e.userData.aiState = AI.ATTACK;
     e.userData.attackPhase = 'aim';
-    e.userData.attackTimer = 0.25 + Math.random() * 0.15; // visible aim pause
+    e.userData.attackTimer = 0.14 + Math.random() * 0.10; // faster reaction before firing
     e.userData.attackDidFire = false;
 }
 
@@ -780,6 +840,9 @@ function enemyAttemptHitPlayer(e, dist) {
 function enemyFireAtPlayer(e, dist) {
     const td = e.userData.typeDef;
     playSpatialSound(td.atkSfx, e.position.x, e.position.z, 0.7);
+
+    // Separate additive flash sprite removed to avoid extra glow.
+    // Shooting flash is shown directly in guardShootFireTex.
 
     if (td.melee) {
         if (dist >= 1.35) return;
@@ -1153,13 +1216,22 @@ function updateEnemySprite(e) {
 
     if (!e.userData.alive) return;
 
-    // Determine the enemy's movement/facing angle
+    // Use real movement direction for walk animation to avoid backward/sliding motion.
+    const hasRecentMove = (e.userData.moveTimer || 0) > 0.01;
+    const facePlayerAngle = Math.atan2(camera.position.x - e.position.x, camera.position.z - e.position.z);
+    const faceInvestigateAngle = Math.atan2(
+        (e.userData.investigateX || camera.position.x) - e.position.x,
+        (e.userData.investigateZ || camera.position.z) - e.position.z
+    );
+
     let enemyFacing = e.userData.patrolAngle || 0;
-    if (ai === AI.CHASE || ai === AI.INVESTIGATE || ai === AI.DODGE || ai === AI.DOOR_WAIT) {
-        // Facing toward target (player or investigate point)
-        const tx = (ai === AI.INVESTIGATE) ? (e.userData.investigateX || camera.position.x) : camera.position.x;
-        const tz = (ai === AI.INVESTIGATE) ? (e.userData.investigateZ || camera.position.z) : camera.position.z;
-        enemyFacing = Math.atan2(tx - e.position.x, tz - e.position.z);
+    if (ai === AI.PATROL || ai === AI.CHASE || ai === AI.INVESTIGATE || ai === AI.DODGE) {
+        if (hasRecentMove && Number.isFinite(e.userData.moveAngle)) enemyFacing = e.userData.moveAngle;
+        else if (ai === AI.PATROL) enemyFacing = e.userData.patrolAngle || 0;
+        else if (ai === AI.INVESTIGATE) enemyFacing = faceInvestigateAngle;
+        else enemyFacing = facePlayerAngle;
+    } else if (ai === AI.STAND || ai === AI.ALERT || ai === AI.DOOR_WAIT) {
+        if (e.userData.alerted) enemyFacing = facePlayerAngle;
     }
 
     // Camera-to-enemy angle (from camera's perspective looking at the enemy)
@@ -1296,7 +1368,7 @@ function updateEnemies(dt) {
                         e.userData.lastSeenZ = camera.position.z;
                     } else {
                         e.userData.aiState = AI.ALERT;
-                        e.userData.alertTimer = 0.3 + Math.random() * 0.3;
+                        e.userData.alertTimer = 0.10 + Math.random() * 0.15;
                         playSpatialSound(td.alertSfx, e.position.x, e.position.z, 0.6);
                     }
                 } else {
@@ -1330,7 +1402,7 @@ function updateEnemies(dt) {
                         e.userData.lastSeenZ = camera.position.z;
                     } else {
                         e.userData.aiState = AI.ALERT;
-                        e.userData.alertTimer = 0.2 + Math.random() * 0.3;
+                        e.userData.alertTimer = 0.08 + Math.random() * 0.12;
                         playSpatialSound(td.alertSfx, e.position.x, e.position.z, 0.6);
                     }
                 }
@@ -1367,7 +1439,7 @@ function updateEnemies(dt) {
 
                 // Move toward sound source
                 if (iDist > 2) {
-                    moveEnemyToward(e, ix, iz, dt);
+                    moveEnemyToward(e, ix, iz, dt * 1.08);
                 }
 
                 e.userData.investigateTimer -= dt;
@@ -1402,9 +1474,9 @@ function updateEnemies(dt) {
                 }
 
                 // Movement — dogs rush straight, others keep minimum distance
-                const minDist = td.rushes ? 0.5 : (td.melee ? 1.0 : 3.0);
+                const minDist = td.rushes ? 0.45 : (td.melee ? 0.9 : 2.1);
                 if (tDist > minDist) {
-                    moveEnemyToward(e, tx, tz, dt);
+                    moveEnemyToward(e, tx, tz, dt * (canSee ? 1.22 : 1.08));
                 }
                 // Officers/SS dodge sideways after shooting
                 else if (td.dodges && canSee && Math.random() < 0.02) {
@@ -1416,7 +1488,7 @@ function updateEnemies(dt) {
                 // Lost sight of player — investigate last known position
                 if (!canSee) {
                     e.userData.lostSightTimer = (e.userData.lostSightTimer || 0) + dt;
-                    if (tDist < 2 || e.userData.lostSightTimer > 5) {
+                    if (tDist < 2 || e.userData.lostSightTimer > 8) {
                         e.userData.aiState = AI.INVESTIGATE;
                         e.userData.investigateX = e.userData.lastSeenX;
                         e.userData.investigateZ = e.userData.lastSeenZ;
@@ -1457,7 +1529,7 @@ function updateEnemies(dt) {
                 e.userData.attackTimer -= dt;
                 if (e.userData.attackPhase === 'aim' && e.userData.attackTimer <= 0) {
                     e.userData.attackPhase = 'fire';
-                    e.userData.attackTimer = 0.2; // hold fire frame visible
+                    e.userData.attackTimer = 0.2; // fire-hold — long enough to see muzzle flash
                     if (!e.userData.attackDidFire) {
                         enemyFireAtPlayer(e, dist);
                         e.userData.attackDidFire = true;
@@ -1493,7 +1565,15 @@ function updateEnemies(dt) {
         }
 
         // Walk animation: only advance when enemy actually moved (Bug B fix)
-        const movedDist = Math.abs(e.position.x - prevX) + Math.abs(e.position.z - prevZ);
+        const movedX = e.position.x - prevX;
+        const movedZ = e.position.z - prevZ;
+        const movedDist = Math.abs(movedX) + Math.abs(movedZ);
+        if (movedDist > 0.001) {
+            e.userData.moveAngle = Math.atan2(movedX, movedZ);
+            e.userData.moveTimer = 0.2;
+        } else {
+            e.userData.moveTimer = Math.max(0, (e.userData.moveTimer || 0) - dt);
+        }
         if (movedDist > 0.001 && e.userData.aiState !== AI.ATTACK && e.userData.aiState !== AI.PAIN) {
             e.userData.walkTimer += dt;
             if (e.userData.walkTimer > 0.15) { e.userData.walkTimer = 0; e.userData.walkFrame++; }
@@ -2149,6 +2229,7 @@ function gameLoop() {
     if (pickupFlashTimer > 0) pickupFlashTimer -= dt;
 
     updateEnemies(dt);
+    // Enemy muzzle flash now comes from sprite frame, no additive glow pass needed.
     checkPickups();
     checkElevator();
     checkGameOver();
