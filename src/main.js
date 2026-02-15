@@ -13,7 +13,8 @@ const MIN_VIEWPORT_HEIGHT = 320;
 const MAX_HEALTH = 100;
 const MAX_AMMO = 99;
 const START_AMMO = 8;
-const CLIP_AMMO = 8;
+const CLIP_AMMO = 4; // Original Wolf3D: ammo clip gives 4 bullets
+const PICKUP_RADIUS = 1.6;
 const DOOR_TRAVEL = CELL - 0.02;
 const DOOR_PASSABLE_OPEN = 0.8;
 
@@ -146,6 +147,7 @@ for (const val of Object.values(SFX)) {
 // ─── Texture Atlas ──────────────────────────────
 const loader = new THREE.TextureLoader();
 const ATLAS_SIZE = 16;
+const STAT_SPRITE_OFFSET = 2; // sprites.png starts stat sprites at SPR_STAT_0 + 2
 
 const wallsAtlas = loader.load('/textures/walls.png');
 wallsAtlas.magFilter = THREE.NearestFilter;
@@ -184,6 +186,12 @@ function spriteTile(col, row) {
     tex.wrapS = THREE.ClampToEdgeWrapping;
     tex.wrapT = THREE.ClampToEdgeWrapping;
     return tex;
+}
+
+function statTile(typeIdx, fallback = [0, 0]) {
+    if (!Number.isFinite(typeIdx) || typeIdx < 0) return fallback;
+    const texIdx = typeIdx + STAT_SPRITE_OFFSET;
+    return [texIdx % ATLAS_SIZE, Math.floor(texIdx / ATLAS_SIZE)];
 }
 
 function guardTile(col, row) {
@@ -231,6 +239,26 @@ const doorFaceMat = getDoorMat(98);
 const doorSideMat = getDoorMat(100);
 const elevDoorMat = getDoorMat(102);
 const lockDoorMat = getDoorMat(104);
+
+// Door geometry — thin slab instead of full wall cube to prevent z-fighting
+const DOOR_THICKNESS = 0.15;
+// BoxGeometry(width, height, depth) → faces: +x,-x, +y,-y, +z,-z
+// For vertical doors (slide along Z): door face = ±x, sides = ±z, top/bottom = ±y
+const doorGeoVertical = new THREE.BoxGeometry(DOOR_THICKNESS, WALL_H, CELL);
+// For horizontal doors (slide along X): door face = ±z, sides = ±x, top/bottom = ±y
+const doorGeoHorizontal = new THREE.BoxGeometry(CELL, WALL_H, DOOR_THICKNESS);
+
+// Multi-material arrays: [+x, -x, +y, -y, +z, -z]
+function makeDoorMaterials(faceMat) {
+    // Vertical door: face on ±x, side on ±z, side on ±y
+    const vert = [faceMat, faceMat, doorSideMat, doorSideMat, doorSideMat, doorSideMat];
+    // Horizontal door: face on ±z, side on ±x, side on ±y
+    const horiz = [doorSideMat, doorSideMat, doorSideMat, doorSideMat, faceMat, faceMat];
+    return { vert, horiz };
+}
+const doorMats = makeDoorMaterials(doorFaceMat);
+const elevDoorMats = makeDoorMaterials(elevDoorMat);
+const lockDoorMats = makeDoorMaterials(lockDoorMat);
 
 // ─── Static Object Definitions (statinfo) ───────
 // Type index (0-46) from decoded map data
@@ -462,11 +490,20 @@ function loadLevel(levelIdx) {
         const wx = d.x * CELL + CELL / 2;
         const wz = d.y * CELL + CELL / 2;
 
-        let faceMat = doorFaceMat;
-        if (d.type === 'elevator') faceMat = elevDoorMat;
-        else if (d.type === 'gold' || d.type === 'silver') faceMat = lockDoorMat;
+        let mats, geo;
+        if (d.type === 'elevator') mats = elevDoorMats;
+        else if (d.type === 'gold' || d.type === 'silver') mats = lockDoorMats;
+        else mats = doorMats;
 
-        const doorMesh = new THREE.Mesh(wallGeo, faceMat);
+        if (d.vertical) {
+            geo = doorGeoVertical;
+            mats = mats.vert;
+        } else {
+            geo = doorGeoHorizontal;
+            mats = mats.horiz;
+        }
+
+        const doorMesh = new THREE.Mesh(geo, mats);
         doorMesh.position.set(wx, WALL_H / 2, wz);
         doorMesh.userData = {
             isDoor: true,
@@ -474,7 +511,7 @@ function loadLevel(levelIdx) {
             vertical: d.vertical,
             gridX: d.x, gridY: d.y,
             openAmount: 0, opening: false, open: false,
-            closeTimer: 0,
+            closing: false, closeTimer: 0,
         };
         scene.add(doorMesh);
         levelMeshes.push(doorMesh);
@@ -514,19 +551,21 @@ function loadLevel(levelIdx) {
         }
 
         if (info.pickup) {
+            const [tx, ty] = statTile(typeIdx, info.tile);
             // This is a pickup
-            const mat = new THREE.SpriteMaterial({ map: spriteTile(info.tile[0], info.tile[1]), transparent: true, alphaTest: 0.5 });
+            const mat = new THREE.SpriteMaterial({ map: spriteTile(tx, ty), transparent: true, alphaTest: 0.5 });
             const sp = new THREE.Sprite(mat);
             const pickupScale = getPickupScale(info.pickup);
             sp.center.set(0.5, 0);
             sp.position.set(wx, 0.02, wz);
             sp.scale.set(pickupScale, pickupScale, 1);
-            sp.userData = { isPickup: true, pickupType: info.pickup, collected: false };
+            sp.userData = { isPickup: true, pickupType: info.pickup, sourceStatType: typeIdx, collected: false };
             scene.add(sp);
             levelPickups.push(sp);
         } else {
+            const [tx, ty] = statTile(typeIdx, info.tile);
             // Decorative / blocking static
-            const mat = new THREE.SpriteMaterial({ map: spriteTile(info.tile[0], info.tile[1]), transparent: true, alphaTest: 0.5 });
+            const mat = new THREE.SpriteMaterial({ map: spriteTile(tx, ty), transparent: true, alphaTest: 0.5 });
             const sp = new THREE.Sprite(mat);
             sp.center.set(0.5, 0);
             sp.position.set(wx, 0.02, wz);
@@ -895,13 +934,16 @@ function alertEnemiesBySound(sourceX, sourceZ, radius) {
 // Enemy tries to open a door in its path
 function enemyTryOpenDoor(e, gx, gz) {
     const door = getDoorAt(gx, gz);
-    if (!door || door.userData.open || door.userData.opening) return false;
+    if (!door || door.userData.open) return false;
+    if (door.userData.opening && !door.userData.closing) return false;
     // Enemies can't open locked/elevator doors
     if (door.userData.doorType === 'gold' || door.userData.doorType === 'silver' || door.userData.doorType === 'elevator') return false;
     if (!e.userData.typeDef.canOpenDoors) return false;
 
+    if (door.userData.closing) door.userData.closing = false;
     door.userData.opening = true;
-    playSpatialSound(SFX.doorOpen, door.position.x, door.position.z, 0.8);
+    const bx = gx * CELL + CELL / 2, bz = gz * CELL + CELL / 2;
+    playSpatialSound(SFX.doorOpen, bx, bz, 0.8);
     // Enemy waits for door to open
     e.userData.aiState = AI.DOOR_WAIT;
     e.userData.doorWaitTimer = 1.0;
@@ -918,9 +960,15 @@ function tryOpenDoor() {
     const checkZ = camera.position.z + fwd.z * 2;
 
     for (const door of levelDoors) {
-        const dx = checkX - door.position.x;
-        const dz = checkZ - door.position.z;
-        if (Math.abs(dx) < CELL && Math.abs(dz) < CELL && !door.userData.open && !door.userData.opening) {
+        // Use grid-based position for distance check (stable, doesn't move with animation)
+        const doorBaseX = door.userData.gridX * CELL + CELL / 2;
+        const doorBaseZ = door.userData.gridY * CELL + CELL / 2;
+        const dx = checkX - doorBaseX;
+        const dz = checkZ - doorBaseZ;
+        if (Math.abs(dx) < CELL && Math.abs(dz) < CELL) {
+            // Skip already fully open or already opening doors
+            if (door.userData.open || (door.userData.opening && !door.userData.closing)) continue;
+
             const dt = door.userData.doorType;
 
             // Check key requirements
@@ -933,8 +981,12 @@ function tryOpenDoor() {
                 return;
             }
 
+            // If closing, reverse to opening
+            if (door.userData.closing) {
+                door.userData.closing = false;
+            }
             door.userData.opening = true;
-            playSpatialSound(SFX.doorOpen, door.position.x, door.position.z, 0.8);
+            playSpatialSound(SFX.doorOpen, doorBaseX, doorBaseZ, 0.8);
         }
     }
 }
@@ -945,6 +997,11 @@ let notificationTimer = 0;
 function showNotification(text) {
     notificationText = text;
     notificationTimer = 2;
+}
+
+let pickupFlashTimer = 0;
+function showPickupFlash() {
+    pickupFlashTimer = 0.15;
 }
 
 // ─── Shooting ───────────────────────────────────
@@ -1050,14 +1107,15 @@ function killEnemy(e) {
     if (td.tint) e.material.color.copy(td.tint);
     state.score += td.score;
 
-    // Drop ammo
-    if (Math.random() < 0.5 && e.userData.enemyType !== 'dog') {
-        const mat = new THREE.SpriteMaterial({ map: spriteTile(12, 3), transparent: true, alphaTest: 0.5 });
+    // Drop ammo — original Wolf3D: all enemies except dogs drop ammo clip
+    if (e.userData.enemyType !== 'dog') {
+        const [clipCol, clipRow] = statTile(26, [12, 3]);
+        const mat = new THREE.SpriteMaterial({ map: spriteTile(clipCol, clipRow), transparent: true, alphaTest: 0.5 });
         const pickup = new THREE.Sprite(mat);
         pickup.center.set(0.5, 0);
         pickup.position.set(e.position.x, 0.02, e.position.z);
         pickup.scale.set(0.66, 0.66, 1);
-        pickup.userData = { isPickup: true, pickupType: 'ammo', collected: false };
+        pickup.userData = { isPickup: true, pickupType: 'ammo', sourceStatType: 26, collected: false };
         scene.add(pickup);
         levelPickups.push(pickup);
     }
@@ -1451,55 +1509,82 @@ function updateEnemies(dt) {
 // ─── Pickup Collection ──────────────────────────
 
 function checkPickups() {
-    function keepPickup(p) {
-        p.userData.collected = false;
-        scene.add(p);
-    }
-
+    // Original Wolf3D: NO line-of-sight check for pickups — distance only.
+    // Check eligibility BEFORE removing from scene to prevent flicker.
     for (const p of levelPickups) {
         if (p.userData.collected) continue;
-        if (camera.position.distanceTo(p.position) < 1.2) {
+
+        // 2D distance only (pickups on floor y≈0, camera at eye height y≈0.9)
+        const pdx = camera.position.x - p.position.x;
+        const pdz = camera.position.z - p.position.z;
+        if (pdx * pdx + pdz * pdz >= PICKUP_RADIUS * PICKUP_RADIUS) continue;
+
+        const t = p.userData.pickupType;
+        let picked = false;
+
+        switch (t) {
+            // ── Health pickups ──
+            case 'health':  // firstaid kit — +25 HP
+                if (state.health >= MAX_HEALTH) break;
+                state.health = Math.min(MAX_HEALTH, state.health + 25);
+                playSound(SFX.pickupHealth, 0.8);
+                picked = true; break;
+            case 'food':    // dog food / plate — +4 HP (classic Wolf3D value)
+                if (state.health >= MAX_HEALTH) break;
+                state.health = Math.min(MAX_HEALTH, state.health + 4);
+                playSound(SFX.pickupFood, 0.8);
+                picked = true; break;
+
+            // ── Ammo pickups ──
+            case 'ammo':    // ammo clip — +4 bullets
+                if (state.ammo >= MAX_AMMO) break;
+                state.ammo = Math.min(MAX_AMMO, state.ammo + CLIP_AMMO);
+                playSound(SFX.pickupAmmo, 0.8);
+                picked = true; break;
+
+            // ── Weapons (always pick up — give ammo + upgrade) ──
+            case 'machinegun':
+                state.ammo = Math.min(MAX_AMMO, state.ammo + 6);
+                if (state.weapon === 'pistol') state.weapon = 'machinegun';
+                playSound(SFX.pickupWeapon, 0.8);
+                picked = true; break;
+            case 'chaingun':
+                state.ammo = Math.min(MAX_AMMO, state.ammo + 6);
+                state.weapon = 'chaingun';
+                playSound(SFX.pickupWeapon, 0.8);
+                picked = true; break;
+
+            // ── Keys ──
+            case 'key1':
+                if (state.keys.gold) break;  // already have it
+                state.keys.gold = true;
+                playSound(SFX.pickupKey, 0.8);
+                picked = true; break;
+            case 'key2':
+                if (state.keys.silver) break;
+                state.keys.silver = true;
+                playSound(SFX.pickupKey, 0.8);
+                picked = true; break;
+
+            // ── Treasures (always pick up) ──
+            case 'cross':   state.score += 100;  playSound(SFX.pickupTreasure, 0.8); picked = true; break;
+            case 'chalice': state.score += 500;  playSound(SFX.pickupTreasure, 0.8); picked = true; break;
+            case 'bible':   state.score += 1000; playSound(SFX.pickupTreasure, 0.8); picked = true; break;
+            case 'crown':   state.score += 5000; playSound(SFX.pickupTreasure, 0.8); picked = true; break;
+
+            // ── Extra life ──
+            case 'oneup':
+                state.lives++;
+                state.health = MAX_HEALTH;
+                state.ammo = Math.min(MAX_AMMO, state.ammo + 25);
+                playSound(SFX.pickupHealth, 0.8);
+                picked = true; break;
+        }
+
+        if (picked) {
             p.userData.collected = true;
             scene.remove(p);
-            const t = p.userData.pickupType;
-            switch (t) {
-                case 'health':
-                    if (state.health >= MAX_HEALTH) { keepPickup(p); continue; }
-                    state.health = Math.min(MAX_HEALTH, state.health + 25);
-                    playSound(SFX.pickupHealth, 0.5); break;
-                case 'food':
-                    if (state.health >= MAX_HEALTH) { keepPickup(p); continue; }
-                    state.health = Math.min(MAX_HEALTH, state.health + 10);
-                    playSound(SFX.pickupFood, 0.5); break;
-                case 'ammo':
-                    if (state.ammo >= MAX_AMMO) { keepPickup(p); continue; }
-                    state.ammo = Math.min(MAX_AMMO, state.ammo + CLIP_AMMO);
-                    playSound(SFX.pickupAmmo, 0.5); break;
-                case 'machinegun':
-                    if (state.ammo >= MAX_AMMO && state.weapon !== 'pistol') { keepPickup(p); continue; }
-                    state.ammo = Math.min(MAX_AMMO, state.ammo + CLIP_AMMO);
-                    if (state.weapon === 'pistol') state.weapon = 'machinegun';
-                    playSound(SFX.pickupWeapon, 0.5); break;
-                case 'chaingun':
-                    if (state.ammo >= MAX_AMMO && state.weapon === 'chaingun') { keepPickup(p); continue; }
-                    state.ammo = Math.min(MAX_AMMO, state.ammo + CLIP_AMMO * 2);
-                    state.weapon = 'chaingun';
-                    playSound(SFX.pickupWeapon, 0.5); break;
-                case 'key1':
-                    state.keys.gold = true;
-                    playSound(SFX.pickupKey, 0.5); break;
-                case 'key2':
-                    state.keys.silver = true;
-                    playSound(SFX.pickupKey, 0.5); break;
-                case 'cross': state.score += 100; playSound(SFX.pickupTreasure, 0.5); break;
-                case 'chalice': state.score += 500; playSound(SFX.pickupTreasure, 0.5); break;
-                case 'bible': state.score += 1000; playSound(SFX.pickupTreasure, 0.5); break;
-                case 'crown': state.score += 5000; playSound(SFX.pickupTreasure, 0.5); break;
-                case 'oneup':
-                    state.lives++;
-                    state.health = MAX_HEALTH;
-                    playSound(SFX.pickupHealth, 0.5); break;
-            }
+            showPickupFlash();
         }
     }
 }
@@ -1708,6 +1793,16 @@ function drawHUD() {
         hCtx.textAlign = 'center';
         hCtx.fillText(notificationText, 320, 12);
         hCtx.textAlign = 'left';
+    }
+
+    // Pickup flash — brief gold tint on HUD border
+    if (pickupFlashTimer > 0) {
+        hCtx.save();
+        hCtx.globalAlpha = Math.min(1, pickupFlashTimer / 0.1);
+        hCtx.strokeStyle = '#ffcc00';
+        hCtx.lineWidth = 4;
+        hCtx.strokeRect(2, 2, W - 4, H - 4);
+        hCtx.restore();
     }
 }
 
@@ -2000,10 +2095,12 @@ function gameLoop() {
 
     // Door animations
     for (const d of levelDoors) {
+        const baseX = d.userData.gridX * CELL + CELL / 2;
+        const baseZ = d.userData.gridY * CELL + CELL / 2;
+
+        // Opening animation
         if (d.userData.opening && d.userData.openAmount < 1) {
-            d.userData.openAmount += dt * 1.5;
-            const baseX = d.userData.gridX * CELL + CELL / 2;
-            const baseZ = d.userData.gridY * CELL + CELL / 2;
+            d.userData.openAmount = Math.min(1, d.userData.openAmount + dt * 1.5);
             if (d.userData.vertical)
                 d.position.z = baseZ + d.userData.openAmount * DOOR_TRAVEL;
             else
@@ -2014,20 +2111,34 @@ function gameLoop() {
                 d.userData.closeTimer = 0;
             }
         }
+
+        // Closing animation (smooth slide back)
+        if (d.userData.closing && d.userData.openAmount > 0) {
+            d.userData.openAmount = Math.max(0, d.userData.openAmount - dt * 1.5);
+            if (d.userData.vertical)
+                d.position.z = baseZ + d.userData.openAmount * DOOR_TRAVEL;
+            else
+                d.position.x = baseX + d.userData.openAmount * DOOR_TRAVEL;
+            if (d.userData.openAmount <= 0) {
+                d.userData.closing = false;
+                d.userData.openAmount = 0;
+                d.position.set(baseX, WALL_H / 2, baseZ);
+            }
+        }
+
         // Auto-close after timeout
-        if (d.userData.open) {
+        if (d.userData.open && !d.userData.closing) {
             d.userData.closeTimer += dt;
             if (d.userData.closeTimer > 5) {
-                // Check if player is in doorway
-                const dx = camera.position.x - d.position.x;
-                const dz = camera.position.z - d.position.z;
-                if (Math.abs(dx) > CELL * 1.2 || Math.abs(dz) > CELL * 1.2) {
-                    // Close door
+                // Check if player or enemy is in doorway
+                const pgx = Math.floor(camera.position.x / CELL);
+                const pgz = Math.floor(camera.position.z / CELL);
+                const inDoorway = (pgx === d.userData.gridX && pgz === d.userData.gridY);
+                if (!inDoorway) {
                     d.userData.open = false;
-                    d.userData.openAmount = 0;
+                    d.userData.closing = true;
                     d.userData.closeTimer = 0;
-                    d.position.set(d.userData.gridX * CELL + CELL / 2, WALL_H / 2, d.userData.gridY * CELL + CELL / 2);
-                    playSpatialSound(SFX.doorClose, d.position.x, d.position.z, 0.6);
+                    playSpatialSound(SFX.doorClose, baseX, baseZ, 0.6);
                 }
             }
         }
@@ -2035,6 +2146,7 @@ function gameLoop() {
 
     // Notification timer
     if (notificationTimer > 0) notificationTimer -= dt;
+    if (pickupFlashTimer > 0) pickupFlashTimer -= dt;
 
     updateEnemies(dt);
     checkPickups();
